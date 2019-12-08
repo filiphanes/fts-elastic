@@ -774,9 +774,6 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     str_free(&existing_guids);
 	array_free(&uids);
 	array_free(&expunged_uids);
-	array_free(&result->definite_uids);
-	array_free(&result->maybe_uids);
-	array_free(&result->scores);
 
     if (ret < 0)
         return -1;
