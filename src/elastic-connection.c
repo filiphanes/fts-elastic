@@ -1,5 +1,6 @@
 /* Copyright (c) 2006-2014 Dovecot authors, see the included COPYING file */
 /* Copyright (c) 2014 Joshua Atkins <josh@ascendantcom.com> */
+/* Copyright (c) 2019 Filip Hanes <filip.hanes@gmail.com.com> */
 
 #include "lib.h"
 #include "array.h"
