@@ -1,6 +1,6 @@
 /* Copyright (c) 2006-2014 Dovecot authors, see the included COPYING file */
 /* Copyright (c) 2014 Joshua Atkins <josh@ascendantcom.com> */
-/* Copyright (c) 2019 Filip Hanes <filip.hanes@gmail.com.com> */
+/* Copyright (c) 2019-2020 Filip Hanes <filip.hanes@gmail.com> */
 
 #include "lib.h"
 #include "array.h"
@@ -29,7 +29,7 @@ struct elastic_search_context {
 
 struct elastic_connection {
     struct mail_namespace *ns;
-    char *username;
+    const char *username;
 
     /* ElasticSearch HTTP API information */
     char *http_host;
@@ -60,6 +60,7 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
                             struct elastic_connection **conn_r,
                             const char **error_r)
 {
+    FUNC_START();
     struct http_client_settings http_set;
     struct elastic_connection *conn = NULL;
     struct http_url *http_url = NULL;
@@ -109,12 +110,14 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
 
     *conn_r = conn;
 
+    FUNC_END_RET_INT(0);
     return 0;
 }
 
 
 void elastic_connection_deinit(struct elastic_connection *conn)
 {
+    FUNC_START();
     if (conn != NULL) {
         i_free(conn->http_host);
         i_free(conn->http_base_path);
@@ -122,6 +125,7 @@ void elastic_connection_deinit(struct elastic_connection *conn)
         json_tokener_free(conn->tok);
         i_free(conn);
     }
+    FUNC_END();
 }
 
 /* Checks response status code from _bulk request */
@@ -129,6 +133,7 @@ static void
 elastic_connection_bulk_response(const struct http_response *response,
                                    struct elastic_connection *conn)
 {
+    FUNC_START();
     if (response != NULL && conn != NULL ) {
         /* 200 OK, 204 continue */
         if (response->status / 100 != 2) {
@@ -136,12 +141,14 @@ elastic_connection_bulk_response(const struct http_response *response,
             conn->request_status = -1;
         }
     }
+    FUNC_END();
 }
 
 /* Parses response payload to json from _search request */
 static void
 elastic_connection_payload_input(struct elastic_connection *conn)
 {
+    FUNC_START();
     const unsigned char *data = NULL;
     json_object *jobj = NULL;
     enum json_tokener_error jerr;
@@ -178,6 +185,7 @@ elastic_connection_payload_input(struct elastic_connection *conn)
         io_remove(&conn->io);
         i_stream_unref(&conn->payload);
     }
+    FUNC_END();
 }
 
 /* Parses HTTP response from _search request */
@@ -185,6 +193,7 @@ static void
 elastic_connection_search_response(const struct http_response *response,
                                    struct elastic_connection *conn)
 {
+    FUNC_START();
     /* 404's usually mean the index is missing.
      * it could mean you also hit a non-ES service
      * 400 means request json is malformed */
@@ -205,6 +214,7 @@ elastic_connection_search_response(const struct http_response *response,
     conn->io = io_add_istream(response->payload,
                     elastic_connection_payload_input, conn);
     elastic_connection_payload_input(conn);
+    FUNC_END();
 }
 
 /* Callback from HTTP request
@@ -213,6 +223,7 @@ static void
 elastic_connection_http_response(const struct http_response *response,
                                  struct elastic_connection *conn)
 {
+    FUNC_START();
     if (response != NULL && conn != NULL) {
         switch (conn->post_type) {
         case ELASTIC_POST_TYPE_SEARCH:
@@ -228,12 +239,14 @@ elastic_connection_http_response(const struct http_response *response,
             break;
         }
     }
+    FUNC_END();
 }
 
 /* Performs HTTP POST/DELETE request with callback */
 int elastic_connection_post(struct elastic_connection *conn,
                             const char *path, string_t *data)
 {
+    FUNC_START();
     struct http_client_request *http_req = NULL;
     struct istream *post_payload = NULL;
     const char *method = "POST";
@@ -262,6 +275,7 @@ int elastic_connection_post(struct elastic_connection *conn,
     conn->request_status = 0;
     http_client_wait(elastic_http_client);
 
+    FUNC_END_RET_INT(conn->request_status);
     return conn->request_status;
 }
 
@@ -272,6 +286,7 @@ int elastic_connection_post(struct elastic_connection *conn,
 void elastic_connection_search_hits(struct elastic_search_context *ctx,
                                     struct json_object *hits)
 {
+    FUNC_START();
     struct fts_score_map *scores;
     struct json_object *hit;
     struct json_object *jval;
@@ -336,12 +351,14 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx,
         user = p_strdup(ctx->pool, *id_part);
         */
     }
+    FUNC_END();
 }
 
 
 /* extract values from resulting json object */
 void elastic_connection_json(struct elastic_connection *conn, json_object *jobj)
 {
+    FUNC_START();
     struct json_object *jvalue = NULL;
 
     i_assert(jobj != NULL);
@@ -381,6 +398,7 @@ void elastic_connection_json(struct elastic_connection *conn, json_object *jobj)
         /* not implemented */
         break;
     }
+    FUNC_END();
 }
 
 /* Performs elastic _bulk request
@@ -388,6 +406,7 @@ void elastic_connection_json(struct elastic_connection *conn, json_object *jobj)
  */
 int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd)
 {
+    FUNC_START();
     const char *path = NULL;
 
     if (conn == NULL || cmd == NULL) {
@@ -401,12 +420,14 @@ int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd)
                         conn->refresh_on_update ? "&refresh=true" : "",
                         NULL);
     elastic_connection_post(conn, path, cmd);
+    FUNC_END();
     return conn->request_status;
 }
 
 
 int elastic_connection_refresh(struct elastic_connection *conn)
 {
+    FUNC_START();
     const char *path = NULL;
     string_t *query = t_str_new_const("", 0);
 
@@ -422,6 +443,7 @@ int elastic_connection_refresh(struct elastic_connection *conn)
     if (conn->request_status < 0)
         return -1;
 
+    FUNC_END_RET_INT(0);
     return 0;
 }
 
@@ -433,6 +455,7 @@ int elastic_connection_search(struct elastic_connection *conn,
                               pool_t pool, string_t *query,
                               struct fts_result *result_r)
 {
+    FUNC_START();
     const char *path = NULL;
 
     if (conn == NULL || query == NULL || result_r == NULL) {
@@ -455,6 +478,7 @@ int elastic_connection_search(struct elastic_connection *conn,
     if (conn->request_status < 0)
         return -1;
 
+    FUNC_END_RET_INT(conn->ctx->found);
     return conn->ctx->found;
 }
 
@@ -466,6 +490,7 @@ int elastic_connection_search_scroll(struct elastic_connection *conn,
                               pool_t pool, string_t *query,
                               struct fts_result *result_r)
 {
+    FUNC_START();
     static const char *SCROLL_TIMEOUT = "7s";
     const char *path = NULL;
 
@@ -512,6 +537,7 @@ int elastic_connection_search_scroll(struct elastic_connection *conn,
     if (conn->request_status < 0)
         return -1;
 
+    FUNC_END_RET_INT(conn->ctx->found);
     return conn->ctx->found;
 }
 
@@ -520,6 +546,7 @@ int elastic_connection_search_scroll(struct elastic_connection *conn,
 int elastic_connection_delete_by_query(struct elastic_connection *conn,
                                        pool_t pool, string_t *query)
 {
+    FUNC_START();
     const char *path = NULL;
 
     if (conn == NULL || query == NULL) {
@@ -540,5 +567,6 @@ int elastic_connection_delete_by_query(struct elastic_connection *conn,
     if (conn->request_status < 0)
         return -1;
 
+    FUNC_END_RET_INT(conn->ctx->found);
     return conn->ctx->found;
 }

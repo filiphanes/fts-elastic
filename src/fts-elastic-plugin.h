@@ -36,3 +36,24 @@ void fts_elastic_plugin_init(struct module *module);
 void fts_elastic_plugin_deinit(void);
 
 #endif
+
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3)
+#else
+#   define str_append_max(str, data, size) str_append_n(str, data, size);
+#endif
+
+#if !defined(FUNC_START)
+#ifndef DEBUG
+#define FUNC_START() ((void)0)
+#define FUNC_IN() ((void)0)
+#define FUNC_END() ((void)0)
+#define FUNC_END_RET(ignore) ((void)0)
+#define FUNC_END_RET_INT(ignore) ((void)0)
+#else
+#define FUNC_START()		i_debug("%s:%d %s() start", __FILE__, __LINE__, __FUNCTION__)
+#define FUNC_IN()			i_debug("%s:%d %s() in", __FILE__, __LINE__, __FUNCTION__)
+#define FUNC_END()			i_debug("%s:%d %s() end", __FILE__, __LINE__, __FUNCTION__)
+#define FUNC_END_RET(r)		i_debug("%s:%d %s() return %s", __FILE__, __LINE__, __FUNCTION__, r)
+#define FUNC_END_RET_INT(r)	i_debug("%s:%d %s() return %d", __FILE__, __LINE__, __FUNCTION__, (int)r)
+#endif
+#endif

@@ -38,11 +38,6 @@
           "limit1000": {
             "type": "limit",
             "max_token_count": 1000
-          },
-          "sk_SK" : {
-            "type" : "hunspell",
-            "locale" : "sk_SK",
-            "dedup" : true
           }
         },
         "tokenizer": {
