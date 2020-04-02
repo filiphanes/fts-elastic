@@ -24,7 +24,7 @@
 
 /* values that must be replaced in field names */
 static const char *elastic_field_replace_chars = ".#*\"";
-static const char *json_hex_chars = "0123456789abcdefABCDEF";
+static const char *escape_hex_chars = "0123456789abcdefABCDEF";
 
 struct elastic_fts_backend {
     struct fts_backend backend;
@@ -108,8 +108,8 @@ static void str_append_json_escaped(string_t *dest, const char *data, size_t len
 					buffer_append(dest, data + start, pos - start);
 
 				str_printfa(dest, "\\u00%c%c",
-                            json_hex_chars[c >> 4],
-                            json_hex_chars[c & 0xf]);
+                            escape_hex_chars[c >> 4],
+                            escape_hex_chars[c & 0xf]);
 
 				start = ++pos;
 			} else {
