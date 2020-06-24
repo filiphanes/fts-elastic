@@ -793,7 +793,8 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         }
     }
 	(void)mailbox_list_iter_deinit(&list_iter);
-    mailbox_free(&box);
+    if (box != NULL)
+        mailbox_free(&box);
 
     /* DELETE all other non existing mailboxes user */
     if (str_len(existing_guids) > 0) {
