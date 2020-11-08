@@ -1,0 +1,22 @@
+Source: dovecot-elastic
+Section: mail
+Priority: optional
+Maintainer: Boudhayan Gupta <bgupta@kde.org>
+Build-Depends: debhelper-compat (= 12)
+Standards-Version: 4.4.1
+Homepage: https://www.github.com/filiphanes/fts-elastic
+Vcs-Browser: https://www.github.com/filiphanes/fts-elastic
+Vcs-Git: https://www.github.com/filiphanes/fts-elastic.git
+
+Package: dovecot-elastic
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: secure POP3/IMAP server - Elasticsearch support
+ Dovecot is a mail server whose major goals are security and extreme
+ reliability. It tries very hard to handle all error conditions and verify
+ that all data is valid, making it nearly impossible to crash. It supports
+ mbox/Maildir and its own dbox/mdbox formats, and should also be pretty
+ fast, extensible, and portable.
+ .
+ This package provides Elasticsearch full text search support for Dovecot.
+

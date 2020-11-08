@@ -1,0 +1,5 @@
+dovecot-elastic (0~201108-1) unstable; urgency=medium
+
+  * Initial Debianisation
+
+ -- Boudhayan Gupta <bgupta@kde.org>  Sun, 08 Nov 2020 09:21:57 +0100
