@@ -2,7 +2,9 @@ Source: dovecot-elastic
 Section: mail
 Priority: optional
 Maintainer: Boudhayan Gupta <bgupta@kde.org>
-Build-Depends: debhelper-compat (= 12)
+Build-Depends: debhelper-compat (= 12),
+               dovecot-dev (>= 2.2),
+               libjson-c-dev
 Standards-Version: 4.4.1
 Homepage: https://www.github.com/filiphanes/fts-elastic
 Vcs-Browser: https://www.github.com/filiphanes/fts-elastic
