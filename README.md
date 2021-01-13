@@ -4,6 +4,8 @@ fts-elastic is a [Dovecot full-text search](https://doc.dovecot.org/configuratio
 Dovecot communicates to ES using HTTP/JSON queries. It supports automatic indexing and searching of e-mail.
 For mailboxes with more than 10000 messages it uses [elastic scroll API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-body.html#request-body-search-scroll).
 
+[![Packaging status](https://repology.org/badge/vertical-allrepos/dovecot-fts-elastic.svg)](https://repology.org/project/dovecot-fts-elastic/versions)
+
 ## Requirements
 * Dovecot 2.2+
 * JSON-C
