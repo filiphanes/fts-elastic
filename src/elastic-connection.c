@@ -33,6 +33,8 @@ struct elastic_connection {
 
     /* ElasticSearch HTTP API information */
     char *http_host;
+    const char *basic_auth_username;
+    const char *basic_auth_pass;
     in_port_t http_port;
     char *http_base_path;
     char *http_failure;
@@ -88,6 +90,8 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
 #else
     conn->http_host = i_strdup(http_url->host_name);
 #endif
+    conn->basic_auth_username = set->basic_auth_username;
+    conn->basic_auth_pass = set->basic_auth_pass;
     conn->http_port = http_url->port;
     conn->http_base_path = i_strdup(http_url->path);
     conn->http_ssl = http_url->have_ssl;
@@ -266,6 +270,9 @@ int elastic_connection_post(struct elastic_connection *conn,
     http_client_request_set_ssl(http_req, conn->http_ssl);
     /* XXX: should be application/x-ndjson for bulk updates, but why when this works? */
     http_client_request_add_header(http_req, "Content-Type", "application/json");
+    if (conn->basic_auth_username && conn->basic_auth_pass) {
+        http_client_request_set_auth_simple(http_req, conn->basic_auth_username, conn->basic_auth_pass);
+    }
 
     post_payload = i_stream_create_from_buffer(data);
     http_client_request_set_payload(http_req, post_payload, TRUE);

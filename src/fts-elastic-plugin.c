@@ -47,6 +47,10 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
             set->debug = TRUE;
 		} else if (strncmp(*tmp, "rawlog_dir=", 11) == 0) {
 			set->rawlog_dir = p_strdup(user->pool, *tmp + 11);
+		} else if (strncmp(*tmp, "basic_auth_username=", 20) == 0) {
+			set->basic_auth_username = p_strdup(user->pool, *tmp + 20);
+		} else if (strncmp(*tmp, "basic_auth_pass=", 16) == 0) {
+			set->basic_auth_pass = p_strdup(user->pool, *tmp + 16);
 		} else if (strncmp(*tmp, "bulk_size=", 10) == 0) {
 			if (str_to_uint(*tmp+10, &set->bulk_size) < 0 || set->bulk_size == 0) {
 				i_error("fts_elastic: bulk_size='%s' must be a positive integer", *tmp+10);
