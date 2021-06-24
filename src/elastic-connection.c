@@ -74,7 +74,7 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     }
 
     /* validate the url */
-    if (http_url_parse(set->url, NULL, 0, pool_datastack_create(),
+    if (http_url_parse(set->url, NULL, HTTP_URL_ALLOW_USERINFO_PART, pool_datastack_create(),
                &http_url, &error) < 0) {
         *error_r = t_strdup_printf(
             "fts_elastic: Failed to parse HTTP url: %s", error);
@@ -90,8 +90,12 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
 #else
     conn->http_host = i_strdup(http_url->host_name);
 #endif
-    conn->basic_auth_username = set->basic_auth_username;
-    conn->basic_auth_pass = set->basic_auth_pass;
+
+    if (http_url->user != NULL && http_url->password != NULL) {
+        conn->basic_auth_username = i_strdup(http_url->user);
+        conn->basic_auth_pass = i_strdup(http_url->password);
+    }
+
     conn->http_port = http_url->port;
     conn->http_base_path = i_strdup(http_url->path);
     conn->http_ssl = http_url->have_ssl;
@@ -270,7 +274,7 @@ int elastic_connection_post(struct elastic_connection *conn,
     http_client_request_set_ssl(http_req, conn->http_ssl);
     /* XXX: should be application/x-ndjson for bulk updates, but why when this works? */
     http_client_request_add_header(http_req, "Content-Type", "application/json");
-    if (conn->basic_auth_username && conn->basic_auth_pass) {
+    if (conn->basic_auth_username != NULL && conn->basic_auth_pass != NULL) {
         http_client_request_set_auth_simple(http_req, conn->basic_auth_username, conn->basic_auth_pass);
     }
 
