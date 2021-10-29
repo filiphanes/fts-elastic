@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.53])
-AC_INIT([fts-elastic], [0.1.0], [https://github.com/ascendantcom/fts-elastic])
+AC_INIT([fts-elastic], [0.1.0], [https://github.com/filiphanes/fts-elastic])
 AM_INIT_AUTOMAKE([no-define foreign tar-ustar])
 AC_OUTPUT(Makefile src/Makefile)
 AC_CONFIG_SRCDIR([src])
