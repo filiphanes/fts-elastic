@@ -33,6 +33,13 @@ AC_DISABLE_STATIC
 # Checks for programs.
 AC_PROG_CC
 
+AC_ARG_ENABLE(devel-checks,
+AS_HELP_STRING([--enable-devel-checks], [Enable some extra expensive checks for developers]),
+	if test x$enableval = xyes; then
+		AC_DEFINE(DEBUG,, [Build with extra debugging checks])
+		want_devel_checks=yes
+	fi)
+
 # Checks for libraries.
 AC_SEARCH_LIBS([json_object_from_file], [json json-c], [], [ AC_MSG_ERROR([no json-c available]) ])
 AC_SEARCH_LIBS([json_object_object_get_ex], [json json-c], [ AC_DEFINE([JSON_HAS_GET_EX], [1], [Define if we have json_object_object_get_ex])], [])
