@@ -5,6 +5,7 @@
 #include "lib.h"
 #include "array.h"
 #include "http-client.h"
+#include "fts-user.h"
 #include "mail-user.h"
 #include "mail-storage-hooks.h"
 #include "fts-elastic-plugin.h"
@@ -74,23 +75,43 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
     return 0;
 }
 
+static void fts_elastic_mail_user_deinit(struct mail_user *user)
+{
+    struct fts_elastic_user *fuser = FTS_ELASTIC_USER_CONTEXT(user);
+
+    fts_mail_user_deinit(user);
+    fuser->module_ctx.super.deinit(user);
+}
+
 static void fts_elastic_mail_user_create(struct mail_user *user, const char *env)
 {
     FUNC_START();
+    struct mail_user_vfuncs *v = user->vlast;
     struct fts_elastic_user *fuser = NULL;
+    const char *error;
 
     /* validate our parameters */
     if (user == NULL || env == NULL) {
         i_error("fts_elastic: critical error during mail user creation");
-    } else {
-        fuser = p_new(user->pool, struct fts_elastic_user, 1);
-        if (fts_elastic_plugin_init_settings(user, &fuser->set, env) < 0) {
-            /* invalid settings, disabling */
-            return;
-        }
-
-        MODULE_CONTEXT_SET(user, fts_elastic_user_module, fuser);
+        return;
     }
+
+    fuser = p_new(user->pool, struct fts_elastic_user, 1);
+    if (fts_elastic_plugin_init_settings(user, &fuser->set, env) < 0) {
+        /* invalid settings, disabling */
+        return;
+    }
+
+    if (fts_mail_user_init(user, FALSE, &error) < 0) {
+        i_error("fts_elastic: %s", error);
+        return;
+    }
+
+    fuser->module_ctx.super = *v;
+    user->vlast = &fuser->module_ctx.super;
+    v->deinit = fts_elastic_mail_user_deinit;
+
+    MODULE_CONTEXT_SET(user, fts_elastic_user_module, fuser);
     FUNC_END();
 }
 
