@@ -77,7 +77,7 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
 
 static void fts_elastic_mail_user_deinit(struct mail_user *user)
 {
-    struct fts_elastic_user *fuser = FTS_ELASTIC_USER_CONTEXT(user);
+    struct fts_elastic_user *fuser = FTS_ELASTIC_USER_CONTEXT_REQUIRE(user);
 
     fts_mail_user_deinit(user);
     fuser->module_ctx.super.deinit(user);
