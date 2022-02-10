@@ -7,6 +7,8 @@
 
 #define FTS_ELASTIC_USER_CONTEXT(obj) \
     MODULE_CONTEXT(obj, fts_elastic_user_module)
+#define FTS_ELASTIC_USER_CONTEXT_REQUIRE(obj) \
+    MODULE_CONTEXT_REQUIRE(obj, fts_elastic_user_module)
 
 #ifndef i_zero
 #define i_zero(p) \
