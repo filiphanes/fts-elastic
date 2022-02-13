@@ -85,7 +85,7 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     conn->ctx = i_new(struct elastic_search_context, 1);
     conn->ns = ns;
     conn->username = ns->owner ? ns->owner->username : "-";
-#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3)
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
     conn->http_host = i_strdup(http_url->host.name);
 #else
     conn->http_host = i_strdup(http_url->host_name);
