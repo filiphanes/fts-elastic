@@ -39,7 +39,7 @@ void fts_elastic_plugin_deinit(void);
 
 #endif
 
-#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3)
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
 #else
 #   define str_append_max(str, data, size) str_append_n(str, data, size);
 #endif

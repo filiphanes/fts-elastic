@@ -700,7 +700,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         const char *errstr;
         box = mailbox_alloc(backend->backend.ns->list, info->vname, (enum mailbox_flags)0);
         if (mailbox_open(box) < 0) {
-#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3)
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
     		errstr = mailbox_get_last_internal_error(box, &error);
 #else
     		errstr = mailbox_get_last_error(box, &error);
@@ -715,7 +715,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
             continue;
         }
         if (mailbox_sync(box, (enum mailbox_sync_flags)0) < 0) {
-#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3)
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
     		errstr = mailbox_get_last_internal_error(box, &error);
 #else
     		errstr = mailbox_get_last_error(box, &error);
