@@ -13,8 +13,6 @@ For mailboxes with more than 10000 messages it uses [elastic scroll API](https:/
 * Autoconf 2.53+
 
 ## Compiling
-This plugin needs to compile against the Dovecot source for the version you intend to run it on. A dovecot-devel package is unfortunately insufficient as it does not include the required fts API header files. 
-
 You can provide the path to your source tree by passing --with-dovecot= to ./configure.
 
 Install dependencies
@@ -31,6 +29,10 @@ An example build may look like:
 	  sudo ln -s /usr/lib/dovecot/lib21_fts_elastic_plugin.so /usr/lib/dovecot/modules/lib21_fts_elastic_plugin.so
 
 ## Configuration
+Create an index in Elasticsearch:
+
+	curl -X PUT "localhost:9200/m?pretty"
+
 Create /etc/dovecot/conf.d/90-fts.conf with content:
 
 	mail_plugins = $mail_plugins fts fts_elastic
@@ -39,11 +41,11 @@ Create /etc/dovecot/conf.d/90-fts.conf with content:
 	  fts = elastic
 	  fts_elastic = debug url=http://localhost:9200/m/ bulk_size=5000000 refresh=fts rawlog_dir=/var/log/fts-elastic/
 
-    # no indexes new emails when user make search
-    # yes indexes every email when delivered
+	  # no indexes new emails when user make search
+	  # yes indexes every email when delivered
 	  fts_autoindex = no
-    fts_autoindex_exclude = \Junk
-    fts_autoindex_exclude2 = \Trash
+	  fts_autoindex_exclude = \Junk
+	  fts_autoindex_exclude2 = \Trash
 	}
 
 and (re)start dovecot:
