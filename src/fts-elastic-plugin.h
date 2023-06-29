@@ -39,6 +39,14 @@ void fts_elastic_plugin_deinit(void);
 
 #endif
 
+#if ((DOVECOT_VERSION_MAJOR << 24) + (DOVECOT_VERSION_MINOR << 16) + DOVECOT_VERSION_MICRO < ((2) << 24) + ((3) << 16) + (18))
+#undef DOVECOT_PREREQ
+#define DOVECOT_PREREQ(maj, min, micro) \
+       ((DOVECOT_VERSION_MAJOR << 24) + \
+        (DOVECOT_VERSION_MINOR << 16) + \
+        DOVECOT_VERSION_MICRO >= ((maj) << 24) + ((min) << 16) + (micro))
+#endif
+
 #if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
 #else
 #   define str_append_max(str, data, size) str_append_n(str, data, size);

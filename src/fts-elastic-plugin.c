@@ -75,6 +75,7 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
     return 0;
 }
 
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,17)
 static void fts_elastic_mail_user_deinit(struct mail_user *user)
 {
     struct fts_elastic_user *fuser = FTS_ELASTIC_USER_CONTEXT_REQUIRE(user);
@@ -82,13 +83,16 @@ static void fts_elastic_mail_user_deinit(struct mail_user *user)
     fts_mail_user_deinit(user);
     fuser->module_ctx.super.deinit(user);
 }
+#endif
 
 static void fts_elastic_mail_user_create(struct mail_user *user, const char *env)
 {
     FUNC_START();
-    struct mail_user_vfuncs *v = user->vlast;
     struct fts_elastic_user *fuser = NULL;
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,17)
+    struct mail_user_vfuncs *v = user->vlast;
     const char *error;
+#endif
 
     /* validate our parameters */
     if (user == NULL || env == NULL) {
@@ -102,6 +106,7 @@ static void fts_elastic_mail_user_create(struct mail_user *user, const char *env
         return;
     }
 
+#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,17)
     if (fts_mail_user_init(user, FALSE, &error) < 0) {
         i_error("fts_elastic: %s", error);
         return;
@@ -110,6 +115,7 @@ static void fts_elastic_mail_user_create(struct mail_user *user, const char *env
     fuser->module_ctx.super = *v;
     user->vlast = &fuser->module_ctx.super;
     v->deinit = fts_elastic_mail_user_deinit;
+#endif
 
     MODULE_CONTEXT_SET(user, fts_elastic_user_module, fuser);
     FUNC_END();
