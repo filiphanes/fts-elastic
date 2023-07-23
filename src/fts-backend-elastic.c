@@ -984,7 +984,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     str_append(query, "{\"query\":{\"bool\":{\"filter\":[");
     str_printfa(query, "{\"term\":{\"user\":\"%s\"}},"
                      "{\"term\":{\"box\": \"%s\"}}]",
-                        _backend->ns->owner != NULL ? _backend->ns->owner->username : "",
+                        _backend->ns->owner != NULL ? _backend->ns->owner->username : "-",
                         box_guid);
 
     if (str_len(fields) > 0) {
