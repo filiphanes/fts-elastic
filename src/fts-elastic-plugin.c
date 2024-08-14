@@ -5,9 +5,9 @@
 #include "lib.h"
 #include "array.h"
 #include "http-client.h"
-#include "fts-user.h"
 #include "mail-user.h"
 #include "mail-storage-hooks.h"
+#include "fts-user.h"
 #include "fts-elastic-plugin.h"
 
 #include <stdlib.h>
