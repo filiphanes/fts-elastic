@@ -73,7 +73,7 @@
         "enabled": true
       },
       "properties": {
-        "user":   {"type": "keyword", "normalizer": "lowercase"},
+        "user":   {"type": "keyword", "normalizer": "lowercase", "null_value": ""},
         "box":    {"type": "keyword", "normalizer": "lowercase"},
         "uid":    {"type": "integer"},
         "subject":{"type": "text"},

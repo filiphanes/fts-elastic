@@ -963,7 +963,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
         f_debug("return -1");
         return -1;
     }
-    mailbox_get_open_status(box, STATUS_MESSAGES, &status);
+    f_debug("box_guid: %s", box_guid);
 
     /* attempt to build the match_query */
     if (!elastic_add_definite_query_args(fields, fields_not, match_query, args)) {
@@ -983,7 +983,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     /* generate json search query */
     str_append(query, "{\"query\":{\"bool\":{\"filter\":[");
     str_printfa(query, "{\"term\":{\"user\":\"%s\"}},"
-                     "{\"term\":{\"box\": \"%s\"}}]",
+                     "{\"term\":{\"box\":\"%s\"}}]",
                         _backend->ns->owner != NULL ? _backend->ns->owner->username : "",
                         box_guid);
 
@@ -1002,11 +1002,17 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     }
 
     /* default ES is limited to 10,000 results */
-    str_append(query, "}}, \"size\":10000, \"_source\":false}\n");
+    str_append(query, "}},\"size\":10000,\"_source\":false}\n");
 
     /* build our fts_result return */
     result_r->box = box;
     result_r->scores_sorted = FALSE;
+
+    if (box->opened) {
+        mailbox_get_open_status(box, STATUS_MESSAGES, &status);
+    } else {
+        status.messages = 1;
+    }
 
     if (status.messages > 10000) {
         ret = elastic_connection_search_scroll(backend->conn, pool, query, result_r);
