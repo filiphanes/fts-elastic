@@ -23,7 +23,7 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
                                  struct fts_elastic_settings *set,
                                  const char *str)
 {
-    FUNC_START();
+    f_debug("start");
     const char *const *tmp;
 
     /* validate our parameters */
@@ -71,7 +71,7 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
         }
     }
 
-    FUNC_END();
+    f_debug("end");
     return 0;
 }
 
@@ -87,7 +87,7 @@ static void fts_elastic_mail_user_deinit(struct mail_user *user)
 
 static void fts_elastic_mail_user_create(struct mail_user *user, const char *env)
 {
-    FUNC_START();
+    f_debug("start");
     struct fts_elastic_user *fuser = NULL;
 #if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,17)
     struct mail_user_vfuncs *v = user->vlast;
@@ -118,12 +118,12 @@ static void fts_elastic_mail_user_create(struct mail_user *user, const char *env
 #endif
 
     MODULE_CONTEXT_SET(user, fts_elastic_user_module, fuser);
-    FUNC_END();
+    f_debug("end");
 }
 
 static void fts_elastic_mail_user_created(struct mail_user *user)
 {
-    FUNC_START();
+    f_debug("start");
     const char *env = NULL;
 
     /* validate our parameters */
@@ -136,7 +136,7 @@ static void fts_elastic_mail_user_created(struct mail_user *user)
             fts_elastic_mail_user_create(user, env);
         }
     }
-    FUNC_END();
+    f_debug("end");
 }
 
 static struct mail_storage_hooks fts_elastic_mail_storage_hooks = {
@@ -145,21 +145,22 @@ static struct mail_storage_hooks fts_elastic_mail_storage_hooks = {
 
 void fts_elastic_plugin_init(struct module *module)
 {
-    FUNC_START();
+    f_debug("start");
     fts_backend_register(&fts_backend_elastic);
     mail_storage_hooks_add(module, &fts_elastic_mail_storage_hooks);
-    FUNC_END();
+    f_debug("end");
 }
 
 void fts_elastic_plugin_deinit(void)
 {
-    FUNC_START();
+    f_debug("start");
+    fts_backend_register(&fts_backend_elastic);
     fts_backend_unregister(fts_backend_elastic.name);
     mail_storage_hooks_remove(&fts_elastic_mail_storage_hooks);
     if (elastic_http_client != NULL)
 		http_client_deinit(&elastic_http_client);
 
-    FUNC_END();
+    f_debug("end");
 }
 
 const char *fts_elastic_plugin_dependencies[] = { "fts", NULL };
