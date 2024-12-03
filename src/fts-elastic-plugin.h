@@ -39,23 +39,26 @@ void fts_elastic_plugin_deinit(void);
 
 #endif
 
+#if ((DOVECOT_VERSION_MAJOR << 24) + (DOVECOT_VERSION_MINOR << 16) + DOVECOT_VERSION_MICRO < ((2) << 24) + ((3) << 16) + (18))
+#undef DOVECOT_PREREQ
+#define DOVECOT_PREREQ(maj, min, micro) \
+       ((DOVECOT_VERSION_MAJOR << 24) + \
+        (DOVECOT_VERSION_MINOR << 16) + \
+        DOVECOT_VERSION_MICRO >= ((maj) << 24) + ((min) << 16) + (micro))
+#endif
+
 #if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
 #else
 #   define str_append_max(str, data, size) str_append_n(str, data, size);
 #endif
 
-#if !defined(FUNC_START)
-#ifndef DEBUG
-#define FUNC_START() ((void)0)
-#define FUNC_IN() ((void)0)
-#define FUNC_END() ((void)0)
-#define FUNC_END_RET(ignore) ((void)0)
-#define FUNC_END_RET_INT(ignore) ((void)0)
+// #define DEBUG
+#ifdef DEBUG
+# ifdef __clang__
+#  define f_debug(format, ...)	i_debug("%s:%d %s() "format, __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__)
+# else
+#  define f_debug(format, ...)	i_debug("%s:%d %s() "format, __FILE__, __LINE__, __FUNCTION__ __VA_OPT__(,) __VA_ARGS__)
+# endif /* __clang__ */
 #else
-#define FUNC_START()		i_debug("%s:%d %s() start", __FILE__, __LINE__, __FUNCTION__)
-#define FUNC_IN()			i_debug("%s:%d %s() in", __FILE__, __LINE__, __FUNCTION__)
-#define FUNC_END()			i_debug("%s:%d %s() end", __FILE__, __LINE__, __FUNCTION__)
-#define FUNC_END_RET(r)		i_debug("%s:%d %s() return %s", __FILE__, __LINE__, __FUNCTION__, r)
-#define FUNC_END_RET_INT(r)	i_debug("%s:%d %s() return %d", __FILE__, __LINE__, __FUNCTION__, (int)r)
-#endif
-#endif
+# define f_debug(ignore, ...) ((void)0)
+#endif /* DEBUG */

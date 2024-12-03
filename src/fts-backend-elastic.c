@@ -61,7 +61,7 @@ struct elastic_fts_backend_update_context {
 
 static const char *elastic_field_prepare(const char *field)
 {
-    FUNC_START();
+    f_debug("start");
     int i;
 
     for (i = 0; elastic_field_replace_chars[i] != '\0'; i++) {
@@ -74,7 +74,7 @@ static const char *elastic_field_prepare(const char *field)
 /* copied and edited from https://github.com/json-c/json-c/blob/1934eddf2968a103e943b2938558c1a07054e26f/json_object.c#L106 */
 static void str_append_json_escaped(string_t *dest, const char *data, size_t len)
 {
-    FUNC_START();
+    f_debug("start");
     // i_debug("escaping \"%s\" with size %zu", data, len);
     size_t pos = 0, start = 0;
     unsigned char c;
@@ -119,25 +119,25 @@ static void str_append_json_escaped(string_t *dest, const char *data, size_t len
 	}
 	if (start < pos)
 		buffer_append(dest, data + start, pos - start);
-    FUNC_END();
+    f_debug("end");
 }
 
 static struct fts_backend *fts_backend_elastic_alloc(void)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend *backend;
 
     backend = i_new(struct elastic_fts_backend, 1);
     backend->backend = fts_backend_elastic;
 
     return &backend->backend;
-    FUNC_END();
+    f_debug("end");
 }
 
 static int
 fts_backend_elastic_init(struct fts_backend *_backend, const char **error_r)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
     struct fts_elastic_user *fuser = NULL;
 
@@ -152,22 +152,22 @@ fts_backend_elastic_init(struct fts_backend *_backend, const char **error_r)
         return -1;
     }
 
-    FUNC_END();
+    f_debug("end");
     return elastic_connection_init(&fuser->set, _backend->ns, &backend->conn, error_r);
 }
 
 static void
 fts_backend_elastic_deinit(struct fts_backend *_backend)
 {
-    FUNC_START();
+    f_debug("start");
     i_free(_backend);
-    FUNC_END();
+    f_debug("end");
 }
 
 static void
 fts_backend_elastic_bulk_end(struct elastic_fts_backend_update_context *_ctx)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
 	const struct elastic_fts_field *field;
@@ -197,7 +197,7 @@ fts_backend_elastic_bulk_end(struct elastic_fts_backend_update_context *_ctx)
     buffer_set_used_size(ctx->current_key, 0);
     buffer_set_used_size(ctx->current_value, 0);
     ctx->body_open = FALSE;
-    FUNC_END();
+    f_debug("end");
 }
 
 static int
@@ -205,7 +205,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
                                  struct mailbox *box,
                                  uint32_t *last_uid_r)
 {
-    FUNC_START();
+    f_debug("start");
     static const char JSON_LAST_UID[] =
         "{"
             "\"sort\":{"
@@ -289,14 +289,14 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
         return -1;
 
     fts_index_set_last_uid(box, *last_uid_r);
-    FUNC_END();
+    f_debug("end");
     return 0;
 }
 
 static struct fts_backend_update_context *
 fts_backend_elastic_update_init(struct fts_backend *_backend)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx;
 
     ctx = i_new(struct elastic_fts_backend_update_context, 1);
@@ -310,14 +310,14 @@ fts_backend_elastic_update_init(struct fts_backend *_backend)
     ctx->username = _backend->ns->owner ? _backend->ns->owner->username : "-";
 	i_array_init(&ctx->fields, 16);
 
-    FUNC_END();
+    f_debug("end");
     return &ctx->ctx;
 }
 
 static int
 fts_backend_elastic_update_deinit(struct fts_backend_update_context *_ctx)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
     struct elastic_fts_backend *backend = NULL;
@@ -355,7 +355,7 @@ fts_backend_elastic_update_deinit(struct fts_backend_update_context *_ctx)
     str_free(&ctx->json_request); 
     i_free(ctx);
     
-    FUNC_END();
+    f_debug("end");
     return 0;
 }
 
@@ -363,7 +363,7 @@ static void
 fts_backend_elastic_update_set_mailbox(struct fts_backend_update_context *_ctx,
                                        struct mailbox *box)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
     const char *box_guid = NULL;
@@ -394,14 +394,14 @@ fts_backend_elastic_update_set_mailbox(struct fts_backend_update_context *_ctx,
         i_zero(&ctx->box_guid);
     }
 
-    FUNC_END();
+    f_debug("end");
     ctx->prev_box = box;
 }
 
 static void
 elastic_add_update_field(struct elastic_fts_backend_update_context *ctx)
 {
-    FUNC_START();
+    f_debug("start");
 	struct elastic_fts_field *field;
 
 	/* there are only a few fields. this lookup is fast enough. */
@@ -422,7 +422,7 @@ elastic_add_update_field(struct elastic_fts_backend_update_context *ctx)
     str_append_str(field->value, ctx->current_value);
 	array_append(&ctx->fields, field, 1);
 
-    FUNC_END();
+    f_debug("end");
     return;
 }
 
@@ -430,7 +430,7 @@ static void
 fts_backend_elastic_bulk_start(struct elastic_fts_backend_update_context *_ctx,
                                const char *action_name)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
 
@@ -455,14 +455,14 @@ fts_backend_elastic_bulk_start(struct elastic_fts_backend_update_context *_ctx,
 		            ctx->username
                     );
     }
-    FUNC_END();
+    f_debug("end");
 }
 
 static void
 fts_backend_elastic_uid_changed(struct fts_backend_update_context *_ctx,
                                 uint32_t uid)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
     struct elastic_fts_backend *backend =
@@ -488,13 +488,13 @@ fts_backend_elastic_uid_changed(struct fts_backend_update_context *_ctx,
     ctx->uid = uid;
     
     fts_backend_elastic_bulk_start(ctx, "index");
-    FUNC_END();
+    f_debug("end");
 }
 
 static bool
 fts_backend_elastic_header_want(const char *name)
 {
-    FUNC_START();
+    f_debug("start");
 	return
         strcasecmp(name, "Date") == 0 ||
         strcasecmp(name, "From") == 0 ||
@@ -510,7 +510,7 @@ static bool
 fts_backend_elastic_update_set_build_key(struct fts_backend_update_context *_ctx,
                                          const struct fts_backend_build_key *key)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
 
@@ -542,7 +542,7 @@ fts_backend_elastic_update_set_build_key(struct fts_backend_update_context *_ctx
         i_unreached();
     }
 
-    FUNC_END();
+    f_debug("end");
     return TRUE;
 }
 
@@ -551,7 +551,7 @@ static int
 fts_backend_elastic_update_build_more(struct fts_backend_update_context *_ctx,
                                       const unsigned char *data, size_t size)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
 
@@ -561,14 +561,14 @@ fts_backend_elastic_update_build_more(struct fts_backend_update_context *_ctx,
     }
 
     buffer_append(ctx->current_value, (const char *)data, size);
-    FUNC_END();
+    f_debug("end");
     return 0;
 }
 
 static void
 fts_backend_elastic_update_unset_build_key(struct fts_backend_update_context *_ctx)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
 
@@ -583,14 +583,14 @@ fts_backend_elastic_update_unset_build_key(struct fts_backend_update_context *_c
         buffer_set_used_size(ctx->current_key, 0);
     }
     buffer_set_used_size(ctx->current_value, 0);
-    FUNC_END();
+    f_debug("end");
 }
 
 static void
 fts_backend_elastic_update_expunge(struct fts_backend_update_context *_ctx,
                                    uint32_t uid)
 {
-    FUNC_START();
+    f_debug("start");
     /* fix imapc to call update_expunge with each expunged uid */
     struct elastic_fts_backend_update_context *ctx =
         (struct elastic_fts_backend_update_context *)_ctx;
@@ -601,12 +601,12 @@ fts_backend_elastic_update_expunge(struct fts_backend_update_context *_ctx,
 
     /* add the delete action */
     fts_backend_elastic_bulk_start(ctx, "delete");
-    FUNC_END();
+    f_debug("end");
 }
 
 static int fts_backend_elastic_refresh(struct fts_backend *_backend)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend *backend =
         (struct elastic_fts_backend *)_backend;
 	struct fts_elastic_user *fuser =
@@ -615,7 +615,7 @@ static int fts_backend_elastic_refresh(struct fts_backend *_backend)
     if (fuser->set.refresh_by_fts) {
         elastic_connection_refresh(backend->conn);
     }
-    FUNC_END();
+    f_debug("end");
     return 0;
 }
 
@@ -625,7 +625,7 @@ fts_backend_elastic_expunge_uids(struct fts_backend *_backend,
                                  struct mailbox *box,
                                  ARRAY_TYPE(seq_range) uids)
 {
-    FUNC_START();
+    f_debug("start");
     uint32_t uid;
     unsigned int i;
     struct seq_range_iter iter;
@@ -641,14 +641,14 @@ fts_backend_elastic_expunge_uids(struct fts_backend *_backend,
     }
     fts_backend_elastic_update_deinit(update_ctx);
 
-    FUNC_END();
+    f_debug("end");
     return 0;
 }
 
 /* implement proper rescan */
 static int fts_backend_elastic_rescan(struct fts_backend *_backend)
 {
-    FUNC_START();
+    f_debug("start");
     struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
     pool_t pool;
     string_t *query;
@@ -822,13 +822,13 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
 
     if (ret < 0)
         return -1;
-    FUNC_END();
+    f_debug("end");
     return ret;
 }
 
 static int fts_backend_elastic_optimize(struct fts_backend *backend ATTR_UNUSED)
 {
-    FUNC_START();
+    f_debug("start");
     return 0;
 }
 
@@ -836,7 +836,7 @@ static bool
 elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
                            string_t *value, struct mail_search_arg *arg)
 {
-    FUNC_START();
+    f_debug("start");
     string_t *fields = NULL;
 
     /* validate our input */
@@ -879,7 +879,7 @@ elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
         return FALSE;
     }
 
-    FUNC_END();
+    f_debug("end");
     return TRUE;
 }
 
@@ -887,7 +887,7 @@ static bool
 elastic_add_definite_query_args(string_t *fields, string_t *fields_not,
                                 string_t *value, struct mail_search_arg *arg)
 {
-    FUNC_START();
+    f_debug("start");
     bool field_added = FALSE;
 
     if (fields == NULL || value == NULL || arg == NULL) {
@@ -920,7 +920,7 @@ elastic_add_definite_query_args(string_t *fields, string_t *fields_not,
         }
     }
 
-    FUNC_END();
+    f_debug("end");
     return field_added;
 }
 
@@ -930,7 +930,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
                            enum fts_lookup_flags flags,
                            struct fts_result *result_r)
 {
-    FUNC_START();
+    f_debug("start");
     static const char JSON_MULTI_MATCH[] = 
         "{\"multi_match\":{"
             "\"query\":\"%s\","
@@ -960,14 +960,14 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
 
     /* get the mailbox guid */
     if (fts_mailbox_get_guid(box, &box_guid) < 0){
-        FUNC_END_RET_INT(-1);
+        f_debug("return -1");
         return -1;
     }
-    mailbox_get_open_status(box, STATUS_MESSAGES, &status);
+    f_debug("box_guid: %s", box_guid);
 
     /* attempt to build the match_query */
     if (!elastic_add_definite_query_args(fields, fields_not, match_query, args)) {
-        FUNC_END_RET_INT(-1);
+        f_debug("return -1");
         return -1;
     }
 
@@ -983,7 +983,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     /* generate json search query */
     str_append(query, "{\"query\":{\"bool\":{\"filter\":[");
     str_printfa(query, "{\"term\":{\"user\":\"%s\"}},"
-                     "{\"term\":{\"box\": \"%s\"}}]",
+                     "{\"term\":{\"box\":\"%s\"}}]",
                         _backend->ns->owner != NULL ? _backend->ns->owner->username : "-",
                         box_guid);
 
@@ -1002,11 +1002,17 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     }
 
     /* default ES is limited to 10,000 results */
-    str_append(query, "}}, \"size\":10000, \"_source\":false}\n");
+    str_append(query, "}},\"size\":10000,\"_source\":false}\n");
 
     /* build our fts_result return */
     result_r->box = box;
     result_r->scores_sorted = FALSE;
+
+    if (box->opened) {
+        mailbox_get_open_status(box, STATUS_MESSAGES, &status);
+    } else {
+        status.messages = 1;
+    }
 
     if (status.messages > 10000) {
         ret = elastic_connection_search_scroll(backend->conn, pool, query, result_r);
@@ -1025,7 +1031,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
 
     /* clean-up */
     pool_unref(&pool);
-    FUNC_END_RET_INT(ret);
+    f_debug("return %d", ret);
     return ret;
 }
 
