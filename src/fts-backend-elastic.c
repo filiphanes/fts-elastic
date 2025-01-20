@@ -22,6 +22,8 @@
 #include "fts-elastic-plugin.h"
 #include "elastic-connection.h"
 
+#define ELASTIC_QUERY_MAX_MAILBOX_COUNT 30
+
 /* values that must be replaced in field names */
 static const char *elastic_field_replace_chars = ".#*\"";
 static const char *escape_hex_chars = "0123456789abcdefABCDEF";
@@ -62,12 +64,9 @@ struct elastic_fts_backend_update_context {
 static const char *elastic_field_prepare(const char *field)
 {
     f_debug("start");
-    int i;
-
-    for (i = 0; elastic_field_replace_chars[i] != '\0'; i++) {
+    for (int i=0; elastic_field_replace_chars[i] != '\0'; i++) {
         field = t_str_replace(field, elastic_field_replace_chars[i], '_');
     }
-
     return t_str_lcase(field);
 }
 
@@ -200,35 +199,35 @@ fts_backend_elastic_bulk_end(struct elastic_fts_backend_update_context *_ctx)
     f_debug("end");
 }
 
+static const char JSON_LAST_UID[] =
+    "{"
+        "\"sort\":{"
+            "\"uid\":\"desc\""
+        "},"
+        "\"query\":{"
+            "\"bool\":{"
+                "\"filter\":["
+                    "{\"term\":{\"user\":\"%s\"}},"
+                    "{\"term\":{\"box\":\"%s\"}}"
+                "]"
+            "}"
+        "},"
+        "\"_source\":false,"
+        "\"size\":1"
+    "}\n";
+
 static int
 fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
                                  struct mailbox *box,
                                  uint32_t *last_uid_r)
 {
     f_debug("start");
-    static const char JSON_LAST_UID[] =
-        "{"
-            "\"sort\":{"
-                "\"uid\":\"desc\""
-            "},"
-            "\"query\":{"
-                "\"bool\":{"
-                    "\"filter\":["
-                        "{\"term\":{\"user\":\"%s\"}},"
-                        "{\"term\":{\"box\":\"%s\"}}"
-                    "]"
-                "}"
-            "},"
-            "\"_source\":false,"
-            "\"size\":1"
-        "}\n";
-
     struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
     struct fts_index_header hdr;
     const char *box_guid = NULL;
     pool_t pool;
     string_t *query;
-    struct fts_result *result;
+    struct elastic_result **elastic_results;
     int ret;
 
     /* ensure our backend has been initialised */
@@ -259,23 +258,16 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
         return -1;
     }
 
-
     pool = pool_alloconly_create("elastic search", 1024);
     query = str_new(pool, 256);
     str_printfa(query, JSON_LAST_UID,
         _backend->ns->owner != NULL ? _backend->ns->owner->username : "-",
         box_guid);
 
-    result = p_new(pool, struct fts_result, 1);
-    result->box = box;
-    p_array_init(&result->definite_uids, pool, 2);
-    p_array_init(&result->maybe_uids, pool, 2);
-    p_array_init(&result->scores, pool, 2);
-
-    ret = elastic_connection_search(backend->conn, pool, query, result);
-    if (seq_range_count(&result->definite_uids) > 0) {
+    ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
+    if (seq_range_count(&elastic_results[0]->uids) > 0) {
         struct seq_range_iter iter;
-        seq_range_array_iter_init(&iter, &result->definite_uids);
+        seq_range_array_iter_init(&iter, &elastic_results[0]->uids);
         seq_range_array_iter_nth(&iter, 0, last_uid_r);
     } else {
         /* no uid found because they are not indexed yet */
@@ -657,7 +649,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     struct mailbox *box = NULL;
 	const char *box_guid;
     uint32_t uid;
-    struct fts_result *result;
+    struct fts_multi_result *multi_result;
     ARRAY_TYPE(seq_range) uids;
     ARRAY_TYPE(seq_range) expunged_uids;
     int ret = 0;
@@ -673,7 +665,12 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     existing_guids = str_new(pool, 512);
     p_array_init(&uids, pool, 4*1024);
     p_array_init(&expunged_uids, pool, 512);
-    result = p_new(pool, struct fts_result, 1);
+	multi_result = p_new(pool, struct fts_multi_result, 2);
+    multi_result->pool = pool;
+	struct elastic_result **elastic_results;
+    struct fts_result *result = p_new(pool, struct fts_result, 2);
+    multi_result->box_results = result;
+    result->pool = pool;
     p_array_init(&result->definite_uids, pool, 8*1024);
     p_array_init(&result->maybe_uids, pool, 2);
     p_array_init(&result->scores, pool, 2);
@@ -748,9 +745,6 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         }
         str_printfa(existing_guids, "\"%s\",", box_guid);
 
-        result->box = box;
-    	array_clear(&result->definite_uids);
-
         /* build json query for user box */
         buffer_set_used_size(query, 0);
         str_printfa(query,
@@ -768,25 +762,25 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
             "}\n",
             username, box_guid);
 
-        // download all uids for all boxes from elastic
+        // fetch all uids for this mailbox
         // we need scroll request because we don't know in advance
         // how many messages are actually in elastic
         // the point of rescan is to remove expunges and fix elastic
-        ret = elastic_connection_search_scroll(backend->conn, pool, query, result);
+        ret = elastic_connection_search_scroll(backend->conn, pool, query, &elastic_results);
         if (ret < 0) {
             i_error("fts_elastic: Failed to search uids in elastic for mailbox %s",
                     mailbox_get_vname(box));
             continue;
         }
         array_clear(&expunged_uids);
-        array_append_array(&expunged_uids, &result->definite_uids);
+        array_append_array(&expunged_uids, &elastic_results[0]->uids);
 
         /* find not existing uids (expunged) and delete them */
         seq_range_array_remove_seq_range(&expunged_uids, &uids);
         fts_backend_elastic_expunge_uids(_backend, box, expunged_uids);
 
         /* find missing and set last uid before first missing uid */
-        seq_range_array_remove_seq_range(&uids, &result->definite_uids);
+        seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
         seq_range_array_iter_init(&iter, &uids);
         if (seq_range_array_iter_nth(&iter, 0, &uid)) {
             fts_index_set_last_uid(box, uid-1);
@@ -856,14 +850,12 @@ elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
     case SEARCH_TEXT:
         /* we don't actually have to do anything here; leaving the fields
          * array blank is sufficient to cause full text search with ES */
-
         break;
     case SEARCH_BODY:
         /* SEARCH_BODY has a hdr_field_name of null. we append a comma here 
          * because body can be selected in addition to other fields. it's 
          * trimmed later before being passed to ES if it's the last element. */
         str_append(fields, "\"body\",");
-
         break;
     case SEARCH_HEADER: /* fall through */
     case SEARCH_HEADER_ADDRESS: /* fall through */
@@ -873,13 +865,12 @@ elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
             return FALSE;
         }
         str_printfa(fields, "\"%s\",", elastic_field_prepare(arg->hdr_field_name));
-
         break;
     default:
         return FALSE;
     }
 
-    f_debug("end");
+    f_debug("return TRUE");
     return TRUE;
 }
 
@@ -892,7 +883,6 @@ elastic_add_definite_query_args(string_t *fields, string_t *fields_not,
 
     if (fields == NULL || value == NULL || arg == NULL) {
         i_error("fts_elastic: critical error while building query");
-
         return FALSE;
     }
 
@@ -920,17 +910,84 @@ elastic_add_definite_query_args(string_t *fields, string_t *fields_not,
         }
     }
 
-    f_debug("end");
+    f_debug("return %d", field_added);
     return field_added;
 }
 
 static int
-fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
-                           struct mail_search_arg *args,
-                           enum fts_lookup_flags flags,
-                           struct fts_result *result_r)
-{
+fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
+                                 struct mailbox *const boxes[],
+                                 struct mail_search_arg *args,
+                                 enum fts_lookup_flags flags,
+                                 struct fts_multi_result *result) {
     f_debug("start");
+    struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
+    const char *operator_arg = (flags & FTS_LOOKUP_FLAG_AND_ARGS) ? "and" : "or";
+    const char *box_guid = NULL;
+	struct elastic_result **elastic_results;
+	struct fts_result *fts_result;
+	ARRAY(struct fts_result) fts_results;
+	HASH_TABLE(char *, struct mailbox *) mailboxes;
+    unsigned int i = 0;
+	bool search_all_mailboxes;
+    int32_t ret = -1;
+
+    /* Validate input */
+    if (_backend == NULL || boxes == NULL || args == NULL || result == NULL) {
+        i_error("fts_elastic: critical error during lookup");
+        return -1;
+    }
+
+    pool_t pool = result->pool;
+    string_t *query = str_new(pool, 1024);
+    string_t *match_query = str_new(pool, 1024);
+    string_t *fields = str_new(pool, 512);
+    string_t *fields_not = str_new(pool, 512);
+
+    /* Generate JSON search query */
+    str_printfa(query, "{\"query\":{\"bool\":{\"filter\":["
+                      "{\"term\":{\"user\":\"%s\"}},",
+                _backend->ns->owner != NULL ? _backend->ns->owner->username : "");
+
+	hash_table_create(&mailboxes, default_pool, 0, str_hash, strcmp);
+	for (i = 0; boxes[i] != NULL; i++) ;
+	search_all_mailboxes = i > ELASTIC_QUERY_MAX_MAILBOX_COUNT;
+	if (!search_all_mailboxes)
+		str_append(query, "{\"terms\":{\"box\":[");
+
+    /* Append mailbox GUIDs */
+    for (int i = 0; boxes[i] != NULL; i++) {
+        if (fts_mailbox_get_guid(boxes[i], &box_guid) < 0) {
+            i_debug("Invalid mailbox GUID at index %d", i);
+            return -1;
+        }
+		if (!search_all_mailboxes) {
+            str_printfa(query, "\"%s\",", box_guid);
+		}
+		hash_table_insert(mailboxes, t_strdup_noconst(box_guid), boxes[i]);
+    }
+
+    str_delete(query, str_len(query) - 1, 1);
+    if (!search_all_mailboxes)
+        str_append(query, "]}}]");
+    else 
+        str_append(query, "]");
+
+    /* Attempt to build the match_query */
+    if (!elastic_add_definite_query_args(fields, fields_not, match_query, args)) {
+        f_debug("return -1");
+        return -1;
+    }
+
+    /* Remove trailing commas */
+    if (str_len(fields) > 0) str_delete(fields, str_len(fields) - 1, 1);
+    if (str_len(fields_not) > 0) str_delete(fields_not, str_len(fields_not) - 1, 1);
+
+    /* Add default fields if none are provided */
+    if (str_len(fields) == 0 && str_len(fields_not) == 0) {
+        str_append(fields, "\"from\",\"to\",\"cc\",\"bcc\",\"sender\",\"subject\",\"body\"");
+    }
+
     static const char JSON_MULTI_MATCH[] = 
         "{\"multi_match\":{"
             "\"query\":\"%s\","
@@ -938,102 +995,84 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
             "\"fields\":[%s]"
         "}}";
 
-    struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
-    const char *operator_arg = (flags & FTS_LOOKUP_FLAG_AND_ARGS) ? "and" : "or";
-	struct mailbox_status status;
-    const char *box_guid = NULL;
-
-    /* temp variables */
-    pool_t pool = pool_alloconly_create("fts elastic search", 8*1024);
-    int32_t ret = -1;
-    /* json query building */
-    string_t *query = str_new(pool, 1024);
-    string_t *match_query = str_new(pool, 1024);
-    string_t *fields = str_new(pool, 1024);
-    string_t *fields_not = str_new(pool, 1024);
-
-    /* validate our input */
-    if (_backend == NULL || box == NULL || args == NULL || result_r == NULL) {
-        i_error("fts_elastic: critical error during lookup");
-        return -1;
-    }
-
-    /* get the mailbox guid */
-    if (fts_mailbox_get_guid(box, &box_guid) < 0){
-        f_debug("return -1");
-        return -1;
-    }
-    f_debug("box_guid: %s", box_guid);
-
-    /* attempt to build the match_query */
-    if (!elastic_add_definite_query_args(fields, fields_not, match_query, args)) {
-        f_debug("return -1");
-        return -1;
-    }
-
-    /* remove the trailing ',' */
-    str_delete(fields, str_len(fields) - 1, 1);
-    str_delete(fields_not, str_len(fields_not) - 1, 1);
-
-    /* if no fields were added, add some sensible default fields */
-    if (str_len(fields) == 0 && str_len(fields_not) == 0) {
-        str_append(fields, "\"from\",\"to\",\"cc\",\"bcc\",\"sender\",\"subject\",\"body\"");
-    }
-
-    /* generate json search query */
-    str_append(query, "{\"query\":{\"bool\":{\"filter\":[");
-    str_printfa(query, "{\"term\":{\"user\":\"%s\"}},"
-                     "{\"term\":{\"box\":\"%s\"}}]",
-                        _backend->ns->owner != NULL ? _backend->ns->owner->username : "",
-                        box_guid);
-
     if (str_len(fields) > 0) {
         str_append(query, ",\"must\":[");
-        str_printfa(query, JSON_MULTI_MATCH, str_c(match_query),
-                               operator_arg, str_c(fields));
+        str_printfa(query, JSON_MULTI_MATCH, str_c(match_query), operator_arg, str_c(fields));
         str_append(query, "]");
     }
 
     if (str_len(fields_not) > 0) {
         str_append(query, ",\"must_not\":[");
-        str_printfa(query, JSON_MULTI_MATCH, str_c(match_query),
-                               operator_arg, str_c(fields_not));
+        str_printfa(query, JSON_MULTI_MATCH, str_c(match_query), operator_arg, str_c(fields_not));
         str_append(query, "]");
     }
 
-    /* default ES is limited to 10,000 results */
+    /* Elastic is limited to 10000 results by default */
     str_append(query, "}},\"size\":10000,\"_source\":false}\n");
 
-    /* build our fts_result return */
-    result_r->box = box;
-    result_r->scores_sorted = FALSE;
+    /* Send query to Elasticsearch */
+    ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
 
-    if (box->opened) {
-        mailbox_get_open_status(box, STATUS_MESSAGES, &status);
-    } else {
-        status.messages = 1;
-    }
+	for (i = 0; elastic_results[i] != NULL; i++);
+    f_debug("hits %d, elastic_results length %d", ret, i);
+	p_array_init(&fts_results, result->pool, i+1);
+	for (i = 0; elastic_results[i] != NULL; i++) {
+		struct mailbox *box = hash_table_lookup(mailboxes, elastic_results[i]->box_guid);
+		if (box == NULL) {
+			if (!search_all_mailboxes) {
+				i_warning("fts_elastic: Lookup returned unexpected mailbox "
+					  "with guid=%s", elastic_results[i]->box_guid);
+			}
+			continue;
+		}
+		fts_result = array_append_space(&fts_results);
+		fts_result->box = box;
+        /* FTS_LOOKUP_FLAG_NO_AUTO_FUZZY says that exact matches for non-fuzzy searches
+         * should go to maybe_uids instead of definite_uids. */
+		if ((flags & FTS_LOOKUP_FLAG_NO_AUTO_FUZZY) == 0)
+			fts_result->definite_uids = elastic_results[i]->uids;
+		else
+			fts_result->maybe_uids = elastic_results[i]->uids;
+		fts_result->scores = elastic_results[i]->scores;
+		fts_result->scores_sorted = TRUE;
+	}
+	array_append_zero(&fts_results);
+	result->box_results = array_front_modifiable(&fts_results);
+	hash_table_destroy(&mailboxes);
 
-    if (status.messages > 10000) {
-        ret = elastic_connection_search_scroll(backend->conn, pool, query, result_r);
-    } else {
-        ret = elastic_connection_search(backend->conn, pool, query, result_r);
-    }
-
-    /* FTS_LOOKUP_FLAG_NO_AUTO_FUZZY says that exact matches for non-fuzzy searches
-     * should go to maybe_uids instead of definite_uids. */
-    ARRAY_TYPE(seq_range) uids_tmp;
-    if ((flags & FTS_LOOKUP_FLAG_NO_AUTO_FUZZY) != 0) {
-        uids_tmp = result_r->definite_uids;
-        result_r->definite_uids = result_r->maybe_uids;
-        result_r->maybe_uids = uids_tmp;
-    }
-
-    /* clean-up */
-    pool_unref(&pool);
     f_debug("return %d", ret);
     return ret;
 }
+
+
+static int
+fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
+                           struct mail_search_arg *args,
+                           enum fts_lookup_flags flags,
+                           struct fts_result *result)
+{
+    f_debug("start");
+    struct fts_multi_result *result_multi = p_new(result->pool, struct fts_multi_result, 1);
+    struct mailbox *const boxes[] = {box, NULL};
+    result_multi->pool = result->pool;
+    result_multi->search_state = result->search_state;
+    result_multi->box_results = p_new(result->pool, struct fts_result, 2);
+
+    /* Call lookup_multi */
+    int ret = fts_backend_elastic_lookup_multi(_backend, boxes, args, flags, result_multi);
+
+    /* Copy values from first result*/
+    struct fts_result *box_result = &result_multi->box_results[0];
+    result->box = box;
+    result->definite_uids =  box_result->definite_uids;
+    result->maybe_uids =  box_result->maybe_uids;
+    result->scores =  box_result->scores;
+    result->scores_sorted =  box_result->scores_sorted;
+
+    f_debug("return %d", ret);
+    return ret;
+}
+
 
 struct fts_backend fts_backend_elastic = {
     .name = "elastic",
@@ -1056,7 +1095,7 @@ struct fts_backend fts_backend_elastic = {
         fts_backend_elastic_optimize,
         fts_backend_default_can_lookup,
         fts_backend_elastic_lookup,
-        NULL,
+        fts_backend_elastic_lookup_multi,
         NULL
     }
 };

@@ -10,6 +10,7 @@
 #include "ioloop.h"
 #include "istream.h"
 #include "mail-namespace.h"
+#include "mail-storage-private.h"
 #include "http-url.h"
 #include "http-client.h"
 #include "fts-elastic-plugin.h"
@@ -21,9 +22,9 @@
 
 struct elastic_search_context {
     pool_t pool;
-    const char *scroll_id;
-	struct fts_result *result;
     int found;
+	struct elastic_result ***results;
+    const char *scroll_id;
 };
 
 
@@ -75,8 +76,8 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     }
 
     /* validate the url */
-    if (http_url_parse(set->url, NULL, HTTP_URL_ALLOW_USERINFO_PART, pool_datastack_create(),
-               &http_url, &error) < 0) {
+    if (http_url_parse(set->url, NULL, HTTP_URL_ALLOW_USERINFO_PART,
+                pool_datastack_create(), &http_url, &error) < 0) {
         *error_r = t_strdup_printf(
             "fts_elastic: Failed to parse HTTP url: %s", error);
         f_debug("return -1");
@@ -298,18 +299,21 @@ int elastic_connection_post(struct elastic_connection *conn,
  * and fills fts_result->definite_uids
  * and fts->result->scores if present
  */
-void elastic_connection_search_hits(struct elastic_search_context *ctx,
-                                    struct json_object *hits)
+void elastic_connection_search_hits(struct elastic_search_context *ctx, struct json_object *hits)
 {
     f_debug("start");
+    struct elastic_result *result;
+    ARRAY(struct elastic_result *) results_array;
     struct fts_score_map *scores;
     struct json_object *hit;
     struct json_object *jval;
     uint32_t uid = 0;
     int hits_count = 0;
     int i = 0;
+    char *box_guid = "";
     const char *_id;
-    const char *const *id_part;
+    char **id_part;
+	HASH_TABLE(char *, struct elastic_result *) results_hash;
 
     if (ctx == NULL || hits == NULL) {
         i_error("fts_elastic: select_json: critical error while processing result JSON");
@@ -323,6 +327,9 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx,
         return;
     }
 
+	hash_table_create(&results_hash, ctx->pool, 0, str_hash, strcmp);
+	p_array_init(&results_array, ctx->pool, 32);
+
     hits_count = json_object_array_length(hits);
     for (i = 0; i < hits_count; i++) {
         hit = json_object_array_get_idx(hits, i);
@@ -333,29 +340,33 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx,
         }
 
         _id = json_object_get_string(jval);
-        id_part = t_strsplit_spaces(_id, "/");
+        id_part = p_strsplit_spaces(ctx->pool, _id, "/");
         if (str_to_uint32(*id_part, &uid) < 0 || uid == 0) {
             i_warning("fts_elastic: uid <= 0 in _id:\"%s\"", _id);
             continue;
         }
-        /* we currently search only in one mbox
         id_part++;
         if (*id_part == NULL) {
-            i_warning("fts_elastic: mbox_guid not found in _id:\"%s\"", _id);
-            guid = "";
+            i_warning("fts_elastic: mailbox guid not found in: %s", _id);
             continue;
         }
-        if (strcmp(guid, *id_part) != 0) {
-            ctx->result = get_fts_result_by_guid(ctx, *id_part);
-        } else {
-            // We are using already box result from previous hit
+        if (strcmp(box_guid, *id_part) != 0) {
+            box_guid = *id_part;
+            result = hash_table_lookup(results_hash, box_guid);
+            if (result == NULL) {
+                result = p_new(ctx->pool, struct elastic_result, 1);
+                result->box_guid = box_guid;
+                p_array_init(&result->uids, ctx->pool, 32);
+                p_array_init(&result->scores, ctx->pool, 32);
+                hash_table_insert(results_hash, box_guid, result);
+                array_push_back(&results_array, &result);
+            }
         }
-        */
         ctx->found += 1;
-        if (seq_range_array_add(&ctx->result->definite_uids, uid)) {
+        if (seq_range_array_add(&result->uids, uid)) {
             /* duplicate result */
         } else if (json_object_object_get_ex(hit, "_score", &jval)) {
-            scores = array_append_space(&ctx->result->scores);
+            scores = array_append_space(&result->scores);
             scores->uid = uid;
             scores->score = json_object_get_double(jval);
         }
@@ -368,6 +379,9 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx,
         user = p_strdup(ctx->pool, *id_part);
         */
     }
+    hash_table_destroy(&results_hash);
+    array_append_zero(&results_array);
+    *ctx->results = array_front_modifiable(&results_array);
     f_debug("end");
 }
 
@@ -473,14 +487,12 @@ int elastic_connection_refresh(struct elastic_connection *conn)
  * parses json response
  * and fills fts_result
  */
-int elastic_connection_search(struct elastic_connection *conn,
-                              pool_t pool, string_t *query,
-                              struct fts_result *result_r)
+int elastic_connection_search(struct elastic_connection *conn, pool_t pool, string_t *query, struct elastic_result ***results)
 {
     f_debug("start");
     const char *path = NULL;
 
-    if (conn == NULL || query == NULL || result_r == NULL) {
+    if (conn == NULL || query == NULL || results == NULL) {
         i_error("fts_elastic: critical error during search");
         f_debug("return -1");
         return -1;
@@ -488,14 +500,15 @@ int elastic_connection_search(struct elastic_connection *conn,
 
     i_zero(conn->ctx);
     conn->ctx->pool = pool;
-    conn->ctx->result = result_r;
+    conn->ctx->results = results;
     conn->ctx->found = 0;
     conn->post_type = ELASTIC_POST_TYPE_SEARCH;
 
 	i_free_and_null(conn->http_failure);
     json_tokener_reset(conn->tok);
 
-    path = t_strconcat(conn->http_base_path, "_search?routing=", conn->username, NULL);
+    path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
+                       conn->username, NULL);
     elastic_connection_post(conn, path, query);
 
     if (conn->request_status < 0) {
@@ -510,16 +523,15 @@ int elastic_connection_search(struct elastic_connection *conn,
 /* Performs elastic search query with scroll
  * parses json response
  * and fills fts_result
+ * @deprecated use search_after (optionally with point in time)
  */
-int elastic_connection_search_scroll(struct elastic_connection *conn,
-                              pool_t pool, string_t *query,
-                              struct fts_result *result_r)
+int elastic_connection_search_scroll(struct elastic_connection *conn, pool_t pool, string_t *query, struct elastic_result ***results)
 {
     f_debug("start");
     static const char *SCROLL_TIMEOUT = "7s";
     const char *path = NULL;
 
-    if (conn == NULL || query == NULL || result_r == NULL) {
+    if (conn == NULL || query == NULL || results == NULL) {
         i_error("fts_elastic: critical error during search scroll");
         f_debug("return -1");
         return -1;
@@ -528,15 +540,15 @@ int elastic_connection_search_scroll(struct elastic_connection *conn,
     i_zero(conn->ctx);
     i_assert(conn->ctx != NULL);
     conn->ctx->pool = pool;
-    conn->ctx->result = result_r;
+    conn->ctx->results = results;
     conn->ctx->found = 0;
     conn->post_type = ELASTIC_POST_TYPE_SEARCH;
 
 	i_free_and_null(conn->http_failure);
     json_tokener_reset(conn->tok);
 
-    path = t_strconcat(conn->http_base_path, "_search?routing=", conn->username,
-                        "&scroll=", SCROLL_TIMEOUT, NULL);
+    path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
+                        conn->username, "&scroll=", SCROLL_TIMEOUT, NULL);
     elastic_connection_post(conn, path, query);
 
     if (conn->ctx->scroll_id == NULL) {

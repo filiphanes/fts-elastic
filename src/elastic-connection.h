@@ -51,11 +51,11 @@ int elastic_connection_refresh(struct elastic_connection *conn);
 
 int elastic_connection_search(struct elastic_connection *conn,
                               pool_t pool, string_t *query,
-                              struct fts_result *result_r);
+                              struct elastic_result ***results);
 
 int elastic_connection_search_scroll(struct elastic_connection *conn,
                                      pool_t pool, string_t *query,
-                                     struct fts_result *result_r);
+                                     struct elastic_result ***results);
 
 int elastic_connection_rescan(struct elastic_connection *conn,
                               pool_t pool, string_t *query,
