@@ -1056,19 +1056,16 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     struct mailbox *const boxes[] = {box, NULL};
     result_multi->pool = result->pool;
     result_multi->search_state = result->search_state;
-    result_multi->box_results = p_new(result->pool, struct fts_result, 2);
-
-    /* Call lookup_multi */
     int ret = fts_backend_elastic_lookup_multi(_backend, boxes, args, flags, result_multi);
 
-    /* Copy values from first result*/
-    struct fts_result *box_result = &result_multi->box_results[0];
+    /* Copy values from first result */
+    struct fts_result *box_result = result_multi->box_results;
     result->box = box;
-    result->definite_uids =  box_result->definite_uids;
-    result->maybe_uids =  box_result->maybe_uids;
-    result->scores =  box_result->scores;
-    result->scores_sorted =  box_result->scores_sorted;
-
+    result->definite_uids = box_result->definite_uids;
+    // if (array_not_empty(box_result->maybe_uids))
+        // array_append_array(result->maybe_uids, box_result->maybe_uids);
+    result->scores = box_result->scores;
+    result->scores_sorted = box_result->scores_sorted;
     f_debug("return %d", ret);
     return ret;
 }
