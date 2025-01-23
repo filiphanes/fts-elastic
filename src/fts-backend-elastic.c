@@ -233,6 +233,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
     /* ensure our backend has been initialised */
     if (_backend == NULL || box == NULL || last_uid_r == NULL) {
         i_error("fts_elastic: critical error in get_last_uid");
+        f_debug("return -1");
         return -1;
     }
 
@@ -250,11 +251,13 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
      **/
     if (fts_index_get_header(box, &hdr)) {
         *last_uid_r = hdr.last_indexed_uid;
+        f_debug("return 0");
         return 0;
     } 
 
     if (fts_mailbox_get_guid(box, &box_guid) < 0) {
         i_error("fts_elastic: get_last_uid: failed to get mbox guid");
+        f_debug("return -1");
         return -1;
     }
 
@@ -277,11 +280,13 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
     pool_unref(&pool);
     str_free(&query);
 
-    if (ret < 0)
+    if (ret < 0) {
+        f_debug("return -1");
         return -1;
+    }
 
     fts_index_set_last_uid(box, *last_uid_r);
-    f_debug("end");
+    f_debug("return 0");
     return 0;
 }
 
@@ -633,7 +638,7 @@ fts_backend_elastic_expunge_uids(struct fts_backend *_backend,
     }
     fts_backend_elastic_update_deinit(update_ctx);
 
-    f_debug("end");
+    f_debug("return 0");
     return 0;
 }
 
@@ -649,7 +654,6 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     struct mailbox *box = NULL;
 	const char *box_guid;
     uint32_t uid;
-    struct fts_multi_result *multi_result;
     ARRAY_TYPE(seq_range) uids;
     ARRAY_TYPE(seq_range) expunged_uids;
     int ret = 0;
@@ -657,6 +661,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     /* ensure our backend has been initialised */
     if (_backend == NULL) {
         i_error("fts_elastic: critical error in rescan");
+        f_debug("return -1");
         return -1;
     }
 
@@ -665,15 +670,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     existing_guids = str_new(pool, 512);
     p_array_init(&uids, pool, 4*1024);
     p_array_init(&expunged_uids, pool, 512);
-	multi_result = p_new(pool, struct fts_multi_result, 2);
-    multi_result->pool = pool;
 	struct elastic_result **elastic_results;
-    struct fts_result *result = p_new(pool, struct fts_result, 2);
-    multi_result->box_results = result;
-    result->pool = pool;
-    p_array_init(&result->definite_uids, pool, 8*1024);
-    p_array_init(&result->maybe_uids, pool, 2);
-    p_array_init(&result->scores, pool, 2);
     if (backend->backend.ns->owner) {
         username = backend->backend.ns->owner->username;
     }
@@ -773,12 +770,18 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
             continue;
         }
         array_clear(&expunged_uids);
-        array_append_array(&expunged_uids, &elastic_results[0]->uids);
+        if (elastic_results[0] != NULL) {
+            f_debug("appending result uids %d", seq_range_count(&elastic_results[0]->uids));
+            array_append_array(&expunged_uids, &(elastic_results[0]->uids));
+        }
 
+        f_debug("removing uids");
         /* find not existing uids (expunged) and delete them */
         seq_range_array_remove_seq_range(&expunged_uids, &uids);
+        f_debug("expunging uids");
         fts_backend_elastic_expunge_uids(_backend, box, expunged_uids);
 
+        if (elastic_results[0] == NULL) continue;
         /* find missing and set last uid before first missing uid */
         seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
         seq_range_array_iter_init(&iter, &uids);
@@ -814,15 +817,17 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
 	array_free(&uids);
 	array_free(&expunged_uids);
 
-    if (ret < 0)
+    if (ret < 0) {
+        f_debug("return -1");
         return -1;
+    }
     f_debug("end");
     return ret;
 }
 
 static int fts_backend_elastic_optimize(struct fts_backend *backend ATTR_UNUSED)
 {
-    f_debug("start");
+    f_debug("return 0");
     return 0;
 }
 
@@ -1073,7 +1078,7 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
 
 struct fts_backend fts_backend_elastic = {
     .name = "elastic",
-    .flags = FTS_BACKEND_FLAG_FUZZY_SEARCH,
+    .flags = 0, //FTS_BACKEND_FLAG_FUZZY_SEARCH,
 
     {
         fts_backend_elastic_alloc,
