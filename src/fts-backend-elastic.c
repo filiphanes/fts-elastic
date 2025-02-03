@@ -1066,10 +1066,12 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     /* Copy values from first result */
     struct fts_result *box_result = result_multi->box_results;
     result->box = box;
-    result->definite_uids = box_result->definite_uids;
-    // if (array_not_empty(box_result->maybe_uids))
-        // array_append_array(result->maybe_uids, box_result->maybe_uids);
-    result->scores = box_result->scores;
+    if (array_is_created(&box_result->definite_uids))
+        result->definite_uids = box_result->definite_uids;
+    if (array_is_created(&box_result->maybe_uids))
+        result->maybe_uids = box_result->maybe_uids;
+    if (array_is_created(&box_result->scores))
+        result->scores = box_result->scores;
     result->scores_sorted = box_result->scores_sorted;
     f_debug("return %d", ret);
     return ret;
