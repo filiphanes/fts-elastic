@@ -268,7 +268,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
         box_guid);
 
     ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
-    if (seq_range_count(&elastic_results[0]->uids) > 0) {
+    if (elastic_results[0] != NULL && seq_range_count(&elastic_results[0]->uids) > 0) {
         struct seq_range_iter iter;
         seq_range_array_iter_init(&iter, &elastic_results[0]->uids);
         seq_range_array_iter_nth(&iter, 0, last_uid_r);
@@ -1066,6 +1066,9 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     /* Copy values from first result */
     struct fts_result *box_result = result_multi->box_results;
     result->box = box;
+    f_debug("definite_uids %p", box_result->definite_uids);
+    f_debug("maybe_uids %p", box_result->maybe_uids);
+    f_debug("scores %p", box_result->scores);
     if (array_is_created(&box_result->definite_uids))
         result->definite_uids = box_result->definite_uids;
     if (array_is_created(&box_result->maybe_uids))
