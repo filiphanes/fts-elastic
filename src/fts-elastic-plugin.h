@@ -5,6 +5,8 @@
 #include "mail-user.h"
 #include "fts-api-private.h"
 
+#define FTS_ELASTIC_LABEL "fts-elastic"
+
 #define FTS_ELASTIC_USER_CONTEXT(obj) \
     MODULE_CONTEXT(obj, fts_elastic_user_module)
 #define FTS_ELASTIC_USER_CONTEXT_REQUIRE(obj) \
@@ -16,6 +18,7 @@
 #endif
 
 struct fts_elastic_settings {
+    pool_t pool;          /* must be first for the settings parser */
     const char *url;	    /* base URL to an ElasticSearch instance */
     const char *rawlog_dir; /* directory where raw http request and response will be saved */
     unsigned int bulk_size; /* maximum size of values indexed in _bulk requests default=5MB */
@@ -24,9 +27,11 @@ struct fts_elastic_settings {
     bool debug;			    /* whether or not debug is set */
 };
 
+extern const struct setting_parser_info fts_elastic_setting_parser_info;
+
 struct fts_elastic_user {
     union mail_user_module_context module_ctx;	/* mail user context */
-    struct fts_elastic_settings set; 		/* loaded settings */
+    struct fts_elastic_settings *set; 		/* loaded settings */
 };
 
 extern const char *fts_elastic_plugin_dependencies[];
