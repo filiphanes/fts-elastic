@@ -39,11 +39,14 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
     set->bulk_size = 5*1024*1024; /* 5 MB */
     set->refresh_by_fts = TRUE;
     set->refresh_on_update = FALSE;
+    set->use_sql = TRUE;
 
     tmp = t_strsplit_spaces(str, " ");
     for (; *tmp != NULL; tmp++) {
         if (strncmp(*tmp, "url=", 4) == 0) {
             set->url = p_strdup(user->pool, *tmp + 4);
+        } else if (strcmp(*tmp, "use_sql") == 0) {
+            set->use_sql = TRUE;
         } else if (strcmp(*tmp, "debug") == 0) {
             set->debug = TRUE;
 		} else if (strncmp(*tmp, "rawlog_dir=", 11) == 0) {
