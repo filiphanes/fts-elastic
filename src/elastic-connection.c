@@ -61,7 +61,8 @@ struct elastic_connection {
 int elastic_connection_init(const struct fts_elastic_settings *set,
                             struct mail_namespace *ns,
                             struct elastic_connection **conn_r,
-                            const char **error_r)
+                            const char **error_r,
+                            struct event *parent)
 {
     f_debug("start");
     struct http_client_settings http_set;
@@ -112,11 +113,11 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
         http_set.max_idle_time_msecs = 5 * 1000;
         http_set.max_parallel_connections = 1;
         http_set.max_pipelined_requests = 1;
-        http_set.max_redirects = 1;
-        http_set.max_attempts = 3;
-        http_set.debug = set->debug;
-		http_set.rawlog_dir = set->rawlog_dir;
-        elastic_http_client = http_client_init(&http_set);
+        http_set.request_max_redirects = 1;
+        http_set.request_max_attempts = 3;
+        // http_set.debug = set->debug;
+        http_set.rawlog_dir = set->rawlog_dir;
+        elastic_http_client = http_client_init(&http_set, parent);
     }
 
     *conn_r = conn;

@@ -152,7 +152,11 @@ fts_backend_elastic_init(struct fts_backend *_backend, const char **error_r)
     }
 
     f_debug("end");
-    return elastic_connection_init(&fuser->set, _backend->ns, &backend->conn, error_r);
+    return elastic_connection_init(fuser->set,
+                                   _backend->ns,
+                                   &backend->conn,
+                                   error_r,
+                                   _backend->event);
 }
 
 static void
@@ -474,7 +478,7 @@ fts_backend_elastic_uid_changed(struct fts_backend_update_context *_ctx,
     }
 
     /* chunk up our requests in to reasonable sizes */
-    if (str_len(ctx->json_request) > fuser->set.bulk_size) {  
+    if (str_len(ctx->json_request) > fuser->set->bulk_size) {
         /* do an early post */
         elastic_connection_bulk(backend->conn, ctx->json_request);
 
@@ -609,7 +613,7 @@ static int fts_backend_elastic_refresh(struct fts_backend *_backend)
 	struct fts_elastic_user *fuser =
         FTS_ELASTIC_USER_CONTEXT(_backend->ns->user);
 
-    if (fuser->set.refresh_by_fts) {
+    if (fuser->set->refresh_by_fts) {
         elastic_connection_refresh(backend->conn);
     }
     f_debug("end");
@@ -1044,11 +1048,11 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 	array_append_zero(&fts_results);
 	result->box_results = array_front_modifiable(&fts_results);
 	hash_table_destroy(&mailboxes);
-
+    /* clean-up */
+    pool_unref(&pool);
     f_debug("return %d", ret);
     return ret;
 }
-
 
 static int
 fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
@@ -1080,29 +1084,43 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     return ret;
 }
 
+static int
+fts_backend_elastic_is_uid_indexed(struct fts_backend *backend,
+                                   struct mailbox *mailbox,
+                                   uint32_t uid,
+                                   uint32_t *modseq_r)
+{
+    /* suppress unused‐parameter warnings */
+    (void)backend;
+    (void)mailbox;
+    (void)uid;
+    (void)modseq_r;
+    /* index *every* message */
+    return 1;
+}
 
 struct fts_backend fts_backend_elastic = {
     .name = "elastic",
     .flags = 0, //FTS_BACKEND_FLAG_FUZZY_SEARCH,
 
-    {
-        fts_backend_elastic_alloc,
-        fts_backend_elastic_init,
-        fts_backend_elastic_deinit,
-        fts_backend_elastic_get_last_uid,
-        fts_backend_elastic_update_init,
-        fts_backend_elastic_update_deinit,
-        fts_backend_elastic_update_set_mailbox,
-        fts_backend_elastic_update_expunge,
-        fts_backend_elastic_update_set_build_key,
-        fts_backend_elastic_update_unset_build_key,
-        fts_backend_elastic_update_build_more,
-        fts_backend_elastic_refresh,
-        fts_backend_elastic_rescan,
-        fts_backend_elastic_optimize,
-        fts_backend_default_can_lookup,
-        fts_backend_elastic_lookup,
-        fts_backend_elastic_lookup_multi,
-        NULL
-    }
+    .v = {
+        .alloc = fts_backend_elastic_alloc,
+        .init = fts_backend_elastic_init,
+        .deinit = fts_backend_elastic_deinit,
+        .get_last_uid = fts_backend_elastic_get_last_uid,
+        .is_uid_indexed = fts_backend_elastic_is_uid_indexed,
+        .update_init = fts_backend_elastic_update_init,
+        .update_deinit = fts_backend_elastic_update_deinit,
+        .update_set_mailbox = fts_backend_elastic_update_set_mailbox,
+        .update_expunge = fts_backend_elastic_update_expunge,
+        .update_set_build_key = fts_backend_elastic_update_set_build_key,
+        .update_unset_build_key = fts_backend_elastic_update_unset_build_key,
+        .update_build_more = fts_backend_elastic_update_build_more,
+        .refresh = fts_backend_elastic_refresh,
+        .rescan = fts_backend_elastic_rescan,
+        .optimize = fts_backend_elastic_optimize,
+        .can_lookup = fts_backend_default_can_lookup,
+        .lookup = fts_backend_elastic_lookup,
+        .lookup_multi = fts_backend_elastic_lookup_multi,
+    },
 };
