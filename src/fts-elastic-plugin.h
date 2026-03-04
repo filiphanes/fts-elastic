@@ -25,6 +25,7 @@ struct fts_elastic_settings {
     bool refresh_on_update;	/* if we want add ?refresh=true to elastic query*/
     bool refresh_by_fts;	/* if we want to allow refresh http request called by fts plugin */
     bool debug;			    /* whether or not debug is set */
+    bool use_sql;		    /* use elastic sql rest api, which returns smaller results */
 };
 
 extern const struct setting_parser_info fts_elastic_setting_parser_info;
@@ -57,7 +58,7 @@ void fts_elastic_plugin_deinit(void);
 #   define str_append_max(str, data, size) str_append_n(str, data, size);
 #endif
 
-// #define DEBUG
+#define DEBUG
 #ifdef DEBUG
 # ifdef __clang__
 #  define f_debug(format, ...)	i_debug("%s:%d %s() "format, __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__)

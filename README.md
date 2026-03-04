@@ -2,14 +2,13 @@
 fts-elastic is a [Dovecot full-text search](https://doc.dovecot.org/configuration_manual/fts/) indexing plugin that uses [ElasticSearch](https://www.elastic.co/) as a backend.
 
 Dovecot communicates to ES using HTTP/JSON queries. It supports automatic indexing and searching of e-mail.
-For mailboxes with more than 10000 messages it uses [elastic scroll API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-body.html#request-body-search-scroll).
 
 [![Packaging status](https://repology.org/badge/vertical-allrepos/dovecot-fts-elastic.svg)](https://repology.org/project/dovecot-fts-elastic/versions)
 
 ## Requirements
 * Dovecot 2.2+
 * JSON-C
-* ElasticSearch 6.x, 7.x
+* ElasticSearch 6, 7, 8
 * Autoconf 2.53+
 
 ## Compiling
@@ -59,6 +58,7 @@ and (re)start dovecot:
   * index: after each bulk update using ?refrest=true query param (create not effective indexes when combined with fts_autoindex=yes)
   * never: leave it to elastic, indexed emails may not be searchable immediately
 * debug Enables HTTP debugging
+* use_sql enables using [Elastic SQL REST API](https://www.elastic.co/guide/en/elasticsearch/reference/6.8/sql-rest.html), which returns csv results which are more efficient than json results
 * rawlog_dir is directory where HTTP communication with elasticsearch server is written (useful for debugging plugin or elastic schema)
 
 ## ElasticSearch index
