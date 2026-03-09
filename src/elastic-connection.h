@@ -5,8 +5,8 @@
 #include "http-client.h"
 #include "fts-api.h"
 #include <json-c/json.h>
+#include "fts-elastic-settings.h"
 
-struct fts_elastic_settings;
 struct elastic_connection;
 
 enum elastic_post_type {

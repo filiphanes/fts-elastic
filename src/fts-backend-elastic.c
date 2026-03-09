@@ -1036,12 +1036,8 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 		}
 		fts_result = array_append_space(&fts_results);
 		fts_result->box = box;
-        /* FTS_LOOKUP_FLAG_NO_AUTO_FUZZY says that exact matches for non-fuzzy searches
-         * should go to maybe_uids instead of definite_uids. */
-		if ((flags & FTS_LOOKUP_FLAG_NO_AUTO_FUZZY) == 0)
-			fts_result->definite_uids = elastic_results[i]->uids;
-		else
-			fts_result->maybe_uids = elastic_results[i]->uids;
+        fts_result->definite_uids = elastic_results[i]->uids;
+        // fts_result->maybe_uids = elastic_results[i]->uids;
 		fts_result->scores = elastic_results[i]->scores;
 		fts_result->scores_sorted = TRUE;
 	}
@@ -1101,7 +1097,7 @@ fts_backend_elastic_is_uid_indexed(struct fts_backend *backend,
 
 struct fts_backend fts_backend_elastic = {
     .name = "elastic",
-    .flags = 0, //FTS_BACKEND_FLAG_FUZZY_SEARCH,
+    .flags = FTS_BACKEND_FLAG_FUZZY_SEARCH,
 
     .v = {
         .alloc = fts_backend_elastic_alloc,

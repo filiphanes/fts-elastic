@@ -13,6 +13,7 @@
 #include "mail-storage-private.h"
 #include "http-url.h"
 #include "http-client.h"
+#include "settings.h"
 #include "fts-elastic-plugin.h"
 #include "elastic-connection.h"
 
@@ -29,6 +30,7 @@ struct elastic_search_context {
 
 
 struct elastic_connection {
+	struct event *event;
     struct mail_namespace *ns;
     const char *username;
 
@@ -62,10 +64,9 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
                             struct mail_namespace *ns,
                             struct elastic_connection **conn_r,
                             const char **error_r,
-                            struct event *parent)
+                            struct event *event_parent)
 {
     f_debug("start");
-    struct http_client_settings http_set;
     struct elastic_connection *conn = NULL;
     struct http_url *http_url = NULL;
     const char *error = NULL;
@@ -86,14 +87,11 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     }
 
     conn = i_new(struct elastic_connection, 1);
+	conn->event = event_create(event_parent);
     conn->ctx = i_new(struct elastic_search_context, 1);
     conn->ns = ns;
     conn->username = ns->owner ? ns->owner->username : "-";
-#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,0)
     conn->http_host = i_strdup(http_url->host.name);
-#else
-    conn->http_host = i_strdup(http_url->host_name);
-#endif
 
     if (http_url->user != NULL && http_url->password != NULL) {
         conn->basic_auth_username = i_strdup(http_url->user);
@@ -109,15 +107,12 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
 
     /* guard against init being called multiple times */
     if (elastic_http_client == NULL) {
-        i_zero(&http_set);
-        http_set.max_idle_time_msecs = 5 * 1000;
-        http_set.max_parallel_connections = 1;
-        http_set.max_pipelined_requests = 1;
-        http_set.request_max_redirects = 1;
-        http_set.request_max_attempts = 3;
-        // http_set.debug = set->debug;
-        http_set.rawlog_dir = set->rawlog_dir;
-        elastic_http_client = http_client_init(&http_set, parent);
+		settings_event_add_filter_name(conn->event, FTS_ELASTIC_FILTER);
+		if (http_client_init_private_auto(conn->event, &elastic_http_client,
+						  &error) < 0) {
+			*error_r = t_strdup(error);
+			return -1;
+		}
     }
 
     *conn_r = conn;

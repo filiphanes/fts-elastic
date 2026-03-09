@@ -10,6 +10,7 @@
 #include "fts-user.h"
 #include "fts-elastic-plugin.h"
 #include "settings.h"
+#include "fts-elastic-settings.h"
 
 #include <stdlib.h>
 
