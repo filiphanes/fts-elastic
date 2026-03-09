@@ -34,29 +34,29 @@ static struct event_category event_category_fts_elastic = {
 	.parent = &event_category_fts
 };
 
-static int fts_elastic_mail_user_get(struct mail_user *user,
+int fts_elastic_mail_user_get(struct mail_user *user,
                                      struct event *event,
                                      struct fts_elastic_user **fuser_r,
                                      const char **error_r)
 {
     struct fts_elastic_user *fuser;
-    struct fts_elastic_settings *set;
-
-    /* allocate per-user context */
-    fuser = p_new(user->pool, struct fts_elastic_user, 1);
+    const struct fts_elastic_settings *set;
 
     /* parse plugin settings from the tagged event */
-    if (settings_get(event,
-                     &fts_elastic_setting_parser_info,
-                     0, &set, error_r) < 0) {
+    if (fts_elastic_settings_get(event, &fts_elastic_setting_parser_info,
+                                 &set, error_r) < 0) {
         return -1;
     }
-    fuser->set = set;
 
     /* initialize the core FTS user with the same event */
     if (fts_mail_user_init(user, event, FALSE, error_r) < 0) {
+		settings_free(set);
         return -1;
     }
+	if (fuser->set == NULL)
+		fuser->set = set;
+	else
+		settings_free(set);
 
     *fuser_r = fuser;
     return 0;
@@ -65,23 +65,15 @@ static int fts_elastic_mail_user_get(struct mail_user *user,
 static void fts_elastic_mail_user_created(struct mail_user *user)
 {
     struct mail_user_vfuncs *v = user->vlast;
-    struct event *ev = event_create(user->event);
     struct fts_elastic_user *fuser;
-    const char *error;
 
-    /* scope settings lookup to fts_elastic */
-    event_add_category(ev, &event_category_fts_elastic);
-
-    /* pull in per-user config and init core FTS */
-    if (fts_elastic_mail_user_get(user, ev, &fuser, &error) < 0) {
-        event_unref(&ev);
-        return;
-    }
-
+    /* allocate per-user context */
+    fuser = p_new(user->pool, struct fts_elastic_user, 1);
     /* chain into dovecot’s vfunc stack */
     fuser->module_ctx.super = *v;
     user->vlast = &fuser->module_ctx.super;
     v->deinit = fts_elastic_mail_user_deinit;
+	MODULE_CONTEXT_SET(user, fts_elastic_user_module, fuser);
 }
 
 static struct mail_storage_hooks fts_elastic_mail_storage_hooks = {
@@ -99,12 +91,10 @@ void fts_elastic_plugin_init(struct module *module)
 void fts_elastic_plugin_deinit(void)
 {
     f_debug("start");
-    fts_backend_register(&fts_backend_elastic);
     fts_backend_unregister(fts_backend_elastic.name);
     mail_storage_hooks_remove(&fts_elastic_mail_storage_hooks);
     if (elastic_http_client != NULL)
 		http_client_deinit(&elastic_http_client);
-
     f_debug("end");
 }
 

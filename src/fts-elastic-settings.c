@@ -19,10 +19,10 @@ static const struct setting_define fts_elastic_setting_defines[] = {
 };
 
 static const struct fts_elastic_settings fts_elastic_default_settings = {
-    .url = "",
-    .debug = FALSE,
-    .bulk_size = 5*1024*1024,
-    .refresh_by_fts = TRUE,
+    .url               = "",
+    .debug             = FALSE,
+    .bulk_size         = 5*1024*1024,
+    .refresh_by_fts    = TRUE,
     .refresh_on_update = FALSE,
 };
 

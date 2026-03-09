@@ -27,6 +27,11 @@ extern struct fts_backend fts_backend_elastic;
 extern MODULE_CONTEXT_DEFINE(fts_elastic_user_module, &mail_user_module_register);
 extern struct http_client *elastic_http_client;
 
+int fts_elastic_mail_user_get(struct mail_user *user,
+                              struct event *event,
+                              struct fts_elastic_user **fuser_r,
+                              const char **error_r);
+
 void fts_elastic_plugin_init(struct module *module);
 void fts_elastic_plugin_deinit(void);
 
