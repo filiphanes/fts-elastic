@@ -20,14 +20,13 @@ struct http_client *elastic_http_client = NULL;
 struct fts_elastic_user_module fts_elastic_user_module =
     MODULE_CONTEXT_INIT(&mail_user_module_register);
 
-#if defined(DOVECOT_PREREQ) && DOVECOT_PREREQ(2,3,17)
 static void fts_elastic_mail_user_deinit(struct mail_user *user)
 {
     struct fts_elastic_user *fuser = FTS_ELASTIC_USER_CONTEXT_REQUIRE(user);
 
+	settings_free(fuser->set);
     fuser->module_ctx.super.deinit(user);
 }
-#endif
 
 static struct event_category event_category_fts_elastic = {
 	.name = FTS_ELASTIC_LABEL,
@@ -39,7 +38,7 @@ int fts_elastic_mail_user_get(struct mail_user *user,
                                      struct fts_elastic_user **fuser_r,
                                      const char **error_r)
 {
-    struct fts_elastic_user *fuser;
+    struct fts_elastic_user *fuser = FTS_ELASTIC_USER_CONTEXT_REQUIRE(user);
     const struct fts_elastic_settings *set;
 
     /* parse plugin settings from the tagged event */
@@ -67,9 +66,7 @@ static void fts_elastic_mail_user_created(struct mail_user *user)
     struct mail_user_vfuncs *v = user->vlast;
     struct fts_elastic_user *fuser;
 
-    /* allocate per-user context */
     fuser = p_new(user->pool, struct fts_elastic_user, 1);
-    /* chain into dovecot’s vfunc stack */
     fuser->module_ctx.super = *v;
     user->vlast = &fuser->module_ctx.super;
     v->deinit = fts_elastic_mail_user_deinit;

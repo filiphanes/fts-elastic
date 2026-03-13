@@ -30,6 +30,7 @@ static const char *escape_hex_chars = "0123456789abcdefABCDEF";
 
 struct elastic_fts_backend {
     struct fts_backend backend;
+    struct event *event;
     struct elastic_connection *conn;
 };
 
@@ -138,16 +139,13 @@ fts_backend_elastic_init(struct fts_backend *_backend, const char **error_r)
 {
     f_debug("start");
     struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
-    struct fts_elastic_user *fuser = NULL;
+    struct fts_elastic_user *fuser;
 
-    /* ensure our backend is provided */
-    if (_backend == NULL) {
-        *error_r = "fts_elastic: error during backend initialisation";
-        return -1;
-    }
+    backend->event = event_create(_backend->event);
 
-    if ((fuser = FTS_ELASTIC_USER_CONTEXT(_backend->ns->user)) == NULL) {
-        *error_r = "Invalid fts_elastic setting";
+    if (fts_elastic_mail_user_get(_backend->ns->user, backend->event,
+                                  &fuser, error_r) < 0) {
+        event_unref(&backend->event);
         return -1;
     }
 
@@ -156,14 +154,18 @@ fts_backend_elastic_init(struct fts_backend *_backend, const char **error_r)
                                    _backend->ns,
                                    &backend->conn,
                                    error_r,
-                                   _backend->event);
+                                   backend->event);
 }
 
 static void
 fts_backend_elastic_deinit(struct fts_backend *_backend)
 {
     f_debug("start");
-    i_free(_backend);
+    struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
+    if (backend->conn != NULL)
+        elastic_connection_deinit(backend->conn);
+    event_unref(&backend->event);
+    i_free(backend);
     f_debug("end");
 }
 

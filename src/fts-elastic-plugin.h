@@ -19,7 +19,7 @@
 
 struct fts_elastic_user {
     union mail_user_module_context module_ctx;	/* mail user context */
-    struct fts_elastic_settings *set; 		/* loaded settings */
+    const struct fts_elastic_settings *set;	/* loaded settings */
 };
 
 extern const char *fts_elastic_plugin_dependencies[];
