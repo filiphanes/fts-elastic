@@ -130,6 +130,7 @@ void elastic_connection_deinit(struct elastic_connection *conn)
         i_free(conn->http_base_path);
         i_free(conn->ctx);
         json_tokener_free(conn->tok);
+        event_unref(&conn->event);
         i_free(conn);
     }
     f_debug("end");
