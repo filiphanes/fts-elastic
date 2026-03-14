@@ -5,6 +5,8 @@
 #include "mail-user.h"
 #include "fts-api-private.h"
 
+#define FTS_ELASTIC_LABEL "fts-elastic"
+
 #define FTS_ELASTIC_USER_CONTEXT(obj) \
     MODULE_CONTEXT(obj, fts_elastic_user_module)
 #define FTS_ELASTIC_USER_CONTEXT_REQUIRE(obj) \
@@ -15,25 +17,20 @@
 	memset(p, 0 + COMPILE_ERROR_IF_TRUE(sizeof(p) > sizeof(void *)), sizeof(*(p)))
 #endif
 
-struct fts_elastic_settings {
-    const char *url;	    /* base URL to an ElasticSearch instance */
-    const char *rawlog_dir; /* directory where raw http request and response will be saved */
-    unsigned int bulk_size; /* maximum size of values indexed in _bulk requests default=5MB */
-    bool refresh_on_update;	/* if we want add ?refresh=true to elastic query*/
-    bool refresh_by_fts;	/* if we want to allow refresh http request called by fts plugin */
-    bool debug;			    /* whether or not debug is set */
-    bool use_sql;		    /* use elastic sql rest api, which returns smaller results */
-};
-
 struct fts_elastic_user {
     union mail_user_module_context module_ctx;	/* mail user context */
-    struct fts_elastic_settings set; 		/* loaded settings */
+    const struct fts_elastic_settings *set;	/* loaded settings */
 };
 
 extern const char *fts_elastic_plugin_dependencies[];
 extern struct fts_backend fts_backend_elastic;
 extern MODULE_CONTEXT_DEFINE(fts_elastic_user_module, &mail_user_module_register);
 extern struct http_client *elastic_http_client;
+
+int fts_elastic_mail_user_get(struct mail_user *user,
+                              struct event *event,
+                              struct fts_elastic_user **fuser_r,
+                              const char **error_r);
 
 void fts_elastic_plugin_init(struct module *module);
 void fts_elastic_plugin_deinit(void);
@@ -53,7 +50,7 @@ void fts_elastic_plugin_deinit(void);
 #   define str_append_max(str, data, size) str_append_n(str, data, size);
 #endif
 
-#define DEBUG
+#define DEBUG 1
 #ifdef DEBUG
 # ifdef __clang__
 #  define f_debug(format, ...)	i_debug("%s:%d %s() "format, __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__)

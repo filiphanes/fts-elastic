@@ -4,9 +4,9 @@
 #include "seq-range-array.h"
 #include "http-client.h"
 #include "fts-api.h"
-#include <json-c/json.h>
+#include "json-tree.h"
+#include "fts-elastic-settings.h"
 
-struct fts_elastic_settings;
 struct elastic_connection;
 
 enum elastic_post_type {
@@ -29,7 +29,8 @@ struct elastic_search_context;
 int elastic_connection_init(const struct fts_elastic_settings *set,
                             struct mail_namespace *ns,
                             struct elastic_connection **conn_r,
-                            const char **error_r);
+                            const char **error_r,
+                            struct event *parent);
 
 void elastic_connection_deinit(struct elastic_connection *conn);
 
@@ -40,10 +41,11 @@ int elastic_connection_get_last_uid(struct elastic_connection *conn,
 int elastic_connection_post(struct elastic_connection *conn,
                             const char *path, string_t *cmd);
 
-void elastic_connection_json(struct elastic_connection *conn, json_object *jobj);
+void elastic_connection_json(struct elastic_connection *conn,
+                             struct json_tree_node *jroot);
 
 void elastic_connection_search_hits(struct elastic_search_context *ctx,
-                                    struct json_object *hits);
+                                    struct json_tree_node *hits);
 
 int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd);
 

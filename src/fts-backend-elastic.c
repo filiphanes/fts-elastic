@@ -30,6 +30,7 @@ static const char *escape_hex_chars = "0123456789abcdefABCDEF";
 
 struct elastic_fts_backend {
     struct fts_backend backend;
+    struct event *event;
     struct elastic_connection *conn;
 };
 
@@ -138,28 +139,33 @@ fts_backend_elastic_init(struct fts_backend *_backend, const char **error_r)
 {
     f_debug("start");
     struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
-    struct fts_elastic_user *fuser = NULL;
+    struct fts_elastic_user *fuser;
 
-    /* ensure our backend is provided */
-    if (_backend == NULL) {
-        *error_r = "fts_elastic: error during backend initialisation";
-        return -1;
-    }
+    backend->event = event_create(_backend->event);
 
-    if ((fuser = FTS_ELASTIC_USER_CONTEXT(_backend->ns->user)) == NULL) {
-        *error_r = "Invalid fts_elastic setting";
+    if (fts_elastic_mail_user_get(_backend->ns->user, backend->event,
+                                  &fuser, error_r) < 0) {
+        event_unref(&backend->event);
         return -1;
     }
 
     f_debug("end");
-    return elastic_connection_init(&fuser->set, _backend->ns, &backend->conn, error_r);
+    return elastic_connection_init(fuser->set,
+                                   _backend->ns,
+                                   &backend->conn,
+                                   error_r,
+                                   backend->event);
 }
 
 static void
 fts_backend_elastic_deinit(struct fts_backend *_backend)
 {
     f_debug("start");
-    i_free(_backend);
+    struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
+    if (backend->conn != NULL)
+        elastic_connection_deinit(backend->conn);
+    event_unref(&backend->event);
+    i_free(backend);
     f_debug("end");
 }
 
@@ -251,7 +257,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
      **/
     if (fts_index_get_header(box, &hdr)) {
         *last_uid_r = hdr.last_indexed_uid;
-        f_debug("return 0");
+        f_debug("return 0, last_uid=%u", hdr.last_indexed_uid);
         return 0;
     } 
 
@@ -474,7 +480,7 @@ fts_backend_elastic_uid_changed(struct fts_backend_update_context *_ctx,
     }
 
     /* chunk up our requests in to reasonable sizes */
-    if (str_len(ctx->json_request) > fuser->set.bulk_size) {  
+    if (str_len(ctx->json_request) > fuser->set->bulk_size) {
         /* do an early post */
         elastic_connection_bulk(backend->conn, ctx->json_request);
 
@@ -609,7 +615,7 @@ static int fts_backend_elastic_refresh(struct fts_backend *_backend)
 	struct fts_elastic_user *fuser =
         FTS_ELASTIC_USER_CONTEXT(_backend->ns->user);
 
-    if (fuser->set.refresh_by_fts) {
+    if (fuser->set->refresh_by_fts) {
         elastic_connection_refresh(backend->conn);
     }
     f_debug("end");
@@ -781,12 +787,13 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         f_debug("expunging uids");
         fts_backend_elastic_expunge_uids(_backend, box, expunged_uids);
 
-        if (elastic_results[0] == NULL) continue;
         /* find missing and set last uid before first missing uid */
-        seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
+        if (elastic_results[0] != NULL)
+            seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
+        /* uids now contains messages not in ES; reset last_uid so they get indexed */
         seq_range_array_iter_init(&iter, &uids);
         if (seq_range_array_iter_nth(&iter, 0, &uid)) {
-            fts_index_set_last_uid(box, uid-1);
+            fts_index_set_last_uid(box, uid > 0 ? uid-1 : 0);
         }
     }
 	(void)mailbox_list_iter_deinit(&list_iter);
@@ -1032,23 +1039,17 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 		}
 		fts_result = array_append_space(&fts_results);
 		fts_result->box = box;
-        /* FTS_LOOKUP_FLAG_NO_AUTO_FUZZY says that exact matches for non-fuzzy searches
-         * should go to maybe_uids instead of definite_uids. */
-		if ((flags & FTS_LOOKUP_FLAG_NO_AUTO_FUZZY) == 0)
-			fts_result->definite_uids = elastic_results[i]->uids;
-		else
-			fts_result->maybe_uids = elastic_results[i]->uids;
+        fts_result->definite_uids = elastic_results[i]->uids;
+        // fts_result->maybe_uids = elastic_results[i]->uids;
 		fts_result->scores = elastic_results[i]->scores;
 		fts_result->scores_sorted = TRUE;
 	}
 	array_append_zero(&fts_results);
 	result->box_results = array_front_modifiable(&fts_results);
 	hash_table_destroy(&mailboxes);
-
     f_debug("return %d", ret);
     return ret;
 }
-
 
 static int
 fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
@@ -1080,29 +1081,43 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     return ret;
 }
 
+static int
+fts_backend_elastic_is_uid_indexed(struct fts_backend *backend,
+                                   struct mailbox *mailbox,
+                                   uint32_t uid,
+                                   uint32_t *last_indexed_uid_r)
+{
+    uint32_t last_uid;
+    if (fts_backend_elastic_get_last_uid(backend, mailbox, &last_uid) < 0)
+        return -1;
+    if (uid <= last_uid)
+        return 1;
+    *last_indexed_uid_r = last_uid;
+    return 0;
+}
 
 struct fts_backend fts_backend_elastic = {
     .name = "elastic",
-    .flags = 0, //FTS_BACKEND_FLAG_FUZZY_SEARCH,
+    .flags = FTS_BACKEND_FLAG_FUZZY_SEARCH,
 
-    {
-        fts_backend_elastic_alloc,
-        fts_backend_elastic_init,
-        fts_backend_elastic_deinit,
-        fts_backend_elastic_get_last_uid,
-        fts_backend_elastic_update_init,
-        fts_backend_elastic_update_deinit,
-        fts_backend_elastic_update_set_mailbox,
-        fts_backend_elastic_update_expunge,
-        fts_backend_elastic_update_set_build_key,
-        fts_backend_elastic_update_unset_build_key,
-        fts_backend_elastic_update_build_more,
-        fts_backend_elastic_refresh,
-        fts_backend_elastic_rescan,
-        fts_backend_elastic_optimize,
-        fts_backend_default_can_lookup,
-        fts_backend_elastic_lookup,
-        fts_backend_elastic_lookup_multi,
-        NULL
-    }
+    .v = {
+        .alloc = fts_backend_elastic_alloc,
+        .init = fts_backend_elastic_init,
+        .deinit = fts_backend_elastic_deinit,
+        .get_last_uid = fts_backend_elastic_get_last_uid,
+        .is_uid_indexed = fts_backend_elastic_is_uid_indexed,
+        .update_init = fts_backend_elastic_update_init,
+        .update_deinit = fts_backend_elastic_update_deinit,
+        .update_set_mailbox = fts_backend_elastic_update_set_mailbox,
+        .update_expunge = fts_backend_elastic_update_expunge,
+        .update_set_build_key = fts_backend_elastic_update_set_build_key,
+        .update_unset_build_key = fts_backend_elastic_update_unset_build_key,
+        .update_build_more = fts_backend_elastic_update_build_more,
+        .refresh = fts_backend_elastic_refresh,
+        .rescan = fts_backend_elastic_rescan,
+        .optimize = fts_backend_elastic_optimize,
+        .can_lookup = fts_backend_default_can_lookup,
+        .lookup = fts_backend_elastic_lookup,
+        .lookup_multi = fts_backend_elastic_lookup_multi,
+    },
 };
