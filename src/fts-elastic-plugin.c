@@ -28,11 +28,6 @@ static void fts_elastic_mail_user_deinit(struct mail_user *user)
     fuser->module_ctx.super.deinit(user);
 }
 
-static struct event_category event_category_fts_elastic = {
-	.name = FTS_ELASTIC_LABEL,
-	.parent = &event_category_fts
-};
-
 int fts_elastic_mail_user_get(struct mail_user *user,
                                      struct event *event,
                                      struct fts_elastic_user **fuser_r,

@@ -17,7 +17,8 @@
 #include "fts-elastic-plugin.h"
 #include "elastic-connection.h"
 
-#include <json-c/json.h>
+#include "json-istream.h"
+#include "json-tree.h"
 #include <stdio.h>
 
 
@@ -46,7 +47,7 @@ struct elastic_connection {
     /* for streaming processing of results */
     struct istream *payload;
     struct io *io;
-	struct json_tokener *tok;
+	struct json_istream *json_input;
 
     enum elastic_post_type post_type;
 
@@ -103,7 +104,6 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     conn->http_ssl = http_url->have_ssl;
     conn->debug = set->debug;
     conn->refresh_on_update = set->refresh_on_update;
-    conn->tok = json_tokener_new();
 
     /* guard against init being called multiple times */
     if (elastic_http_client == NULL) {
@@ -129,7 +129,8 @@ void elastic_connection_deinit(struct elastic_connection *conn)
         i_free(conn->http_host);
         i_free(conn->http_base_path);
         i_free(conn->ctx);
-        json_tokener_free(conn->tok);
+        if (conn->json_input != NULL)
+            json_istream_destroy(&conn->json_input);
         event_unref(&conn->event);
         i_free(conn);
     }
@@ -157,41 +158,34 @@ static void
 elastic_connection_payload_input(struct elastic_connection *conn)
 {
     f_debug("start");
-    const unsigned char *data = NULL;
-    json_object *jobj = NULL;
-    enum json_tokener_error jerr;
-    size_t size;
-    int ret = -1;
+    struct json_tree *tree = NULL;
+    int ret;
 
-    /* continue appending data so long as it is available */
-    while ((ret = i_stream_read_data(conn->payload, &data, &size, 0)) > 0) {
-        jobj = json_tokener_parse_ex(conn->tok, (const char *)data, size);
-        i_stream_skip(conn->payload, size);
-
-        jerr = json_tokener_get_error(conn->tok);
-        if (jerr == json_tokener_continue) {
-            if (ret < 0)
-                i_error("fts_elastic: json response not finished");
-        } else if (jerr == json_tokener_success) {
-            /* extract values from resulting json object */
-            elastic_connection_json(conn, jobj);
-        } else {
-            i_error("fts_elastic: json tokener error: %s", json_tokener_error_desc(jerr));
-            break;
-        }
+    ret = json_istream_read_tree(conn->json_input, &tree);
+    if (ret == 0) {
+        /* more data needed; io callback will fire again */
+        f_debug("end (waiting for more data)");
+        return;
     }
 
-    if (ret == 0) {
-        /* we will be called again for more data */
-    } else {
-        if (conn->payload->stream_errno != 0) {
-            i_error("fts_elastic: failed to read payload from HTTP server: %m");
-            conn->request_status = -1;
-        }
+    /* done (success or error) — clean up io and payload */
+    io_remove(&conn->io);
+    i_stream_unref(&conn->payload);
 
-        /* clean-up */
-        io_remove(&conn->io);
-        i_stream_unref(&conn->payload);
+    if (ret < 0) {
+        i_error("fts_elastic: json parse error: %s",
+                json_istream_get_error(conn->json_input));
+        conn->request_status = -1;
+        json_istream_destroy(&conn->json_input);
+        f_debug("end (error)");
+        return;
+    }
+
+    json_istream_destroy(&conn->json_input);
+
+    if (tree != NULL) {
+        elastic_connection_json(conn, json_tree_get_root(tree));
+        json_tree_unref(&tree);
     }
     f_debug("end");
 }
@@ -220,6 +214,8 @@ elastic_connection_search_response(const struct http_response *response,
 
     i_stream_ref(response->payload);
     conn->payload = response->payload;
+    conn->json_input = json_istream_create(conn->payload,
+                    JSON_ISTREAM_TYPE_NORMAL, NULL, 0);
     conn->io = io_add_istream(response->payload,
                     elastic_connection_payload_input, conn);
     elastic_connection_payload_input(conn);
@@ -296,17 +292,16 @@ int elastic_connection_post(struct elastic_connection *conn,
  * and fills fts_result->definite_uids
  * and fts->result->scores if present
  */
-void elastic_connection_search_hits(struct elastic_search_context *ctx, struct json_object *hits)
+void elastic_connection_search_hits(struct elastic_search_context *ctx,
+                                    struct json_tree_node *hits)
 {
     f_debug("start");
     struct elastic_result *result;
     ARRAY(struct elastic_result *) results_array;
     struct fts_score_map *scores;
-    struct json_object *hit;
-    struct json_object *jval;
+    struct json_tree_node *hit;
+    struct json_tree_node *jval;
     uint32_t uid = 0;
-    int hits_count = 0;
-    int i = 0;
     char *box_guid = "";
     const char *_id;
     char **id_part;
@@ -318,7 +313,7 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
         return;
     }
 
-    if (json_object_get_type(hits) != json_type_array) {
+    if (!json_tree_node_is_array(hits)) {
         i_error("fts_elastic: select_json: response hits are not array");
         f_debug("return");
         return;
@@ -327,16 +322,16 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
 	hash_table_create(&results_hash, ctx->pool, 0, str_hash, strcmp);
 	p_array_init(&results_array, ctx->pool, 32);
 
-    hits_count = json_object_array_length(hits);
-    for (i = 0; i < hits_count; i++) {
-        hit = json_object_array_get_idx(hits, i);
-        if (!json_object_object_get_ex(hit, "_id", &jval)) {
-            i_warning("fts_elastic: key _id not in search response hit:%s",
-                        json_object_to_json_string(hit));
+    for (hit = json_tree_node_get_child(hits);
+         hit != NULL;
+         hit = json_tree_node_get_next(hit)) {
+        jval = json_tree_node_get_member(hit, "_id");
+        if (jval == NULL) {
+            i_warning("fts_elastic: key _id not in search response hit");
             continue;
         }
 
-        _id = json_object_get_string(jval);
+        _id = json_tree_node_get_str(jval);
         id_part = p_strsplit_spaces(ctx->pool, _id, "/");
         if (str_to_uint32(*id_part, &uid) < 0 || uid == 0) {
             i_warning("fts_elastic: uid <= 0 in _id:\"%s\"", _id);
@@ -360,21 +355,12 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
             }
         }
         ctx->found += 1;
-        if (seq_range_array_add(&result->uids, uid)) {
-            /* duplicate result */
-        } else if (json_object_object_get_ex(hit, "_score", &jval)) {
+        jval = json_tree_node_get_member(hit, "_score");
+        if (!seq_range_array_add(&result->uids, uid) && jval != NULL) {
             scores = array_append_space(&result->scores);
             scores->uid = uid;
-            scores->score = json_object_get_double(jval);
+            scores->score = (float)strtod(json_tree_node_as_str(jval), NULL);
         }
-        /* parse user from _id
-        id_part++;
-        if (*id_part == NULL) {
-            i_warning("fts_elastic: user not found in _id:\"%s\"", _id);
-            continue;
-        }
-        user = p_strdup(ctx->pool, *id_part);
-        */
     }
     hash_table_destroy(&results_hash);
     array_append_zero(&results_array);
@@ -384,37 +370,43 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
 
 
 /* extract values from resulting json object */
-void elastic_connection_json(struct elastic_connection *conn, json_object *jobj)
+void elastic_connection_json(struct elastic_connection *conn,
+                             struct json_tree_node *jroot)
 {
     f_debug("start");
-    struct json_object *jvalue = NULL;
+    struct json_tree_node *jvalue = NULL;
 
-    i_assert(jobj != NULL);
+    i_assert(jroot != NULL);
 
     /* Check for error description */
-    if (json_object_object_get_ex(jobj, "error", &jvalue)) {
-        i_error("fts_elastic: %s", json_object_get_string(jvalue));
+    jvalue = json_tree_node_get_member(jroot, "error");
+    if (jvalue != NULL) {
+        i_error("fts_elastic: %s", json_tree_node_as_str(jvalue));
         f_debug("return");
         return;
     }
 
     /* Check if errors are present in response */
-    if (json_object_object_get_ex(jobj, "errors", &jvalue)) {
+    if (json_tree_node_get_member(jroot, "errors") != NULL) {
         i_error("fts_elastic: errors in response");
     }
 
-    /* Check if _scroll_id are present in response */
-    if (json_object_object_get_ex(jobj, "_scroll_id", &jvalue)) {
-        conn->ctx->scroll_id = p_strdup(conn->ctx->pool, json_object_get_string(jvalue));
+    /* Check if _scroll_id is present in response */
+    jvalue = json_tree_node_get_member(jroot, "_scroll_id");
+    if (jvalue != NULL) {
+        conn->ctx->scroll_id = p_strdup(conn->ctx->pool,
+                                        json_tree_node_get_str(jvalue));
     }
 
     switch (conn->post_type) {
     case ELASTIC_POST_TYPE_SEARCH:
-        if (!json_object_object_get_ex(jobj, "hits", &jvalue)) {
+        jvalue = json_tree_node_get_member(jroot, "hits");
+        if (jvalue == NULL) {
             i_error("fts_elastic: no .hits in search response");
             break;
         }
-        if (!json_object_object_get_ex(jvalue, "hits", &jvalue)) {
+        jvalue = json_tree_node_get_member(jvalue, "hits");
+        if (jvalue == NULL) {
             i_error("fts_elastic: no .hits.hits in search response");
             break;
         }
@@ -502,7 +494,6 @@ int elastic_connection_search(struct elastic_connection *conn, pool_t pool, stri
     conn->post_type = ELASTIC_POST_TYPE_SEARCH;
 
 	i_free_and_null(conn->http_failure);
-    json_tokener_reset(conn->tok);
 
     path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
                        conn->username, NULL);
@@ -542,7 +533,6 @@ int elastic_connection_search_scroll(struct elastic_connection *conn, pool_t poo
     conn->post_type = ELASTIC_POST_TYPE_SEARCH;
 
 	i_free_and_null(conn->http_failure);
-    json_tokener_reset(conn->tok);
 
     path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
                         conn->username, "&scroll=", SCROLL_TIMEOUT, NULL);

@@ -3,7 +3,6 @@ AM_CFLAGS= \
     -I$(abs_dovecotdir)/src/plugins/fts \
     $(LIBDOVECOT_INCLUDE)
 
-AM_LDFLAGS= -ljson-c
 
 lib21_fts_elastic_plugin_la_LDFLAGS = -module -avoid-version
 

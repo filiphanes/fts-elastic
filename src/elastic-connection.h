@@ -4,7 +4,7 @@
 #include "seq-range-array.h"
 #include "http-client.h"
 #include "fts-api.h"
-#include <json-c/json.h>
+#include "json-tree.h"
 #include "fts-elastic-settings.h"
 
 struct elastic_connection;
@@ -41,10 +41,11 @@ int elastic_connection_get_last_uid(struct elastic_connection *conn,
 int elastic_connection_post(struct elastic_connection *conn,
                             const char *path, string_t *cmd);
 
-void elastic_connection_json(struct elastic_connection *conn, json_object *jobj);
+void elastic_connection_json(struct elastic_connection *conn,
+                             struct json_tree_node *jroot);
 
 void elastic_connection_search_hits(struct elastic_search_context *ctx,
-                                    struct json_object *hits);
+                                    struct json_tree_node *hits);
 
 int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd);
 
