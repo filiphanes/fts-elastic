@@ -50,7 +50,7 @@ void fts_elastic_plugin_deinit(void);
 #   define str_append_max(str, data, size) str_append_n(str, data, size);
 #endif
 
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 # ifdef __clang__
 #  define f_debug(format, ...)	i_debug("%s:%d %s() "format, __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__)
