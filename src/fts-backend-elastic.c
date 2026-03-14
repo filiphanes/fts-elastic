@@ -257,7 +257,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
      **/
     if (fts_index_get_header(box, &hdr)) {
         *last_uid_r = hdr.last_indexed_uid;
-        f_debug("return 0");
+        f_debug("return 0, last_uid=%u", hdr.last_indexed_uid);
         return 0;
     } 
 
@@ -787,12 +787,13 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         f_debug("expunging uids");
         fts_backend_elastic_expunge_uids(_backend, box, expunged_uids);
 
-        if (elastic_results[0] == NULL) continue;
         /* find missing and set last uid before first missing uid */
-        seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
+        if (elastic_results[0] != NULL)
+            seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
+        /* uids now contains messages not in ES; reset last_uid so they get indexed */
         seq_range_array_iter_init(&iter, &uids);
         if (seq_range_array_iter_nth(&iter, 0, &uid)) {
-            fts_index_set_last_uid(box, uid-1);
+            fts_index_set_last_uid(box, uid > 0 ? uid-1 : 0);
         }
     }
 	(void)mailbox_list_iter_deinit(&list_iter);
@@ -1046,8 +1047,6 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 	array_append_zero(&fts_results);
 	result->box_results = array_front_modifiable(&fts_results);
 	hash_table_destroy(&mailboxes);
-    /* clean-up */
-    pool_unref(&pool);
     f_debug("return %d", ret);
     return ret;
 }
@@ -1086,15 +1085,15 @@ static int
 fts_backend_elastic_is_uid_indexed(struct fts_backend *backend,
                                    struct mailbox *mailbox,
                                    uint32_t uid,
-                                   uint32_t *modseq_r)
+                                   uint32_t *last_indexed_uid_r)
 {
-    /* suppress unused‐parameter warnings */
-    (void)backend;
-    (void)mailbox;
-    (void)uid;
-    (void)modseq_r;
-    /* index *every* message */
-    return 1;
+    uint32_t last_uid;
+    if (fts_backend_elastic_get_last_uid(backend, mailbox, &last_uid) < 0)
+        return -1;
+    if (uid <= last_uid)
+        return 1;
+    *last_indexed_uid_r = last_uid;
+    return 0;
 }
 
 struct fts_backend fts_backend_elastic = {
