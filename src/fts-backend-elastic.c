@@ -205,23 +205,6 @@ fts_backend_elastic_bulk_end(struct elastic_fts_backend_update_context *_ctx)
     f_debug("end");
 }
 
-static const char JSON_LAST_UID[] =
-    "{"
-        "\"sort\":{"
-            "\"uid\":\"desc\""
-        "},"
-        "\"query\":{"
-            "\"bool\":{"
-                "\"filter\":["
-                    "{\"term\":{\"user\":\"%s\"}},"
-                    "{\"term\":{\"box\":\"%s\"}}"
-                "]"
-            "}"
-        "},"
-        "\"_source\":false,"
-        "\"size\":1"
-    "}\n";
-
 static int
 fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
                                  struct mailbox *box,
@@ -259,7 +242,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
         *last_uid_r = hdr.last_indexed_uid;
         f_debug("return 0, last_uid=%u", hdr.last_indexed_uid);
         return 0;
-    } 
+    }
 
     if (fts_mailbox_get_guid(box, &box_guid) < 0) {
         i_error("fts_elastic: get_last_uid: failed to get mbox guid");
@@ -269,11 +252,14 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
 
     pool = pool_alloconly_create("elastic search", 1024);
     query = str_new(pool, 256);
-    str_printfa(query, JSON_LAST_UID,
+    str_printfa(query,
+        "SELECT uid, box FROM %s WHERE user='%s' AND box='%s'"
+        " ORDER BY uid DESC LIMIT 1",
+        elastic_connection_get_index(backend->conn),
         _backend->ns->owner != NULL ? _backend->ns->owner->username : "-",
         box_guid);
 
-    ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
+    ret = elastic_connection_sql(backend->conn, pool, query, 2, &elastic_results);
     if (elastic_results[0] != NULL && seq_range_count(&elastic_results[0]->uids) > 0) {
         struct seq_range_iter iter;
         seq_range_array_iter_init(&iter, &elastic_results[0]->uids);
@@ -284,7 +270,6 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
     }
 
     pool_unref(&pool);
-    str_free(&query);
 
     if (ret < 0) {
         f_debug("return -1");
@@ -748,28 +733,13 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         }
         str_printfa(existing_guids, "\"%s\",", box_guid);
 
-        /* build json query for user box */
+        /* build SQL query to fetch all indexed UIDs for this mailbox */
         buffer_set_used_size(query, 0);
         str_printfa(query,
-            "{"
-                "\"query\":{"
-                    "\"bool\":{"
-                        "\"filter\":["
-                            "{\"term\":{\"user\":\"%s\"}},"
-                            "{\"term\":{\"box\":\"%s\"}}"
-                        "]"
-                    "}"
-                "},"
-                "\"_source\":false,"
-                "\"size\":10000"
-            "}\n",
-            username, box_guid);
+            "SELECT uid, box FROM %s WHERE user='%s' AND box='%s'",
+            elastic_connection_get_index(backend->conn), username, box_guid);
 
-        // fetch all uids for this mailbox
-        // we need scroll request because we don't know in advance
-        // how many messages are actually in elastic
-        // the point of rescan is to remove expunges and fix elastic
-        ret = elastic_connection_search_scroll(backend->conn, pool, query, &elastic_results);
+        ret = elastic_connection_sql(backend->conn, pool, query, 2, &elastic_results);
         if (ret < 0) {
             i_error("fts_elastic: Failed to search uids in elastic for mailbox %s",
                     mailbox_get_vname(box));
@@ -838,6 +808,17 @@ static int fts_backend_elastic_optimize(struct fts_backend *backend ATTR_UNUSED)
     return 0;
 }
 
+/* Append a SQL string literal value with single-quote escaping */
+static void
+str_append_sql_escaped(string_t *dest, const char *data, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\'')
+            str_append_c(dest, '\'');  /* double single-quote SQL escape */
+        str_append_c(dest, data[i]);
+    }
+}
+
 static bool
 elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
                            string_t *value, struct mail_search_arg *arg)
@@ -860,14 +841,10 @@ elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
 
     switch (arg->type) {
     case SEARCH_TEXT:
-        /* we don't actually have to do anything here; leaving the fields
-         * array blank is sufficient to cause full text search with ES */
+        /* leaving fields blank triggers full-text search across all fields */
         break;
     case SEARCH_BODY:
-        /* SEARCH_BODY has a hdr_field_name of null. we append a comma here 
-         * because body can be selected in addition to other fields. it's 
-         * trimmed later before being passed to ES if it's the last element. */
-        str_append(fields, "\"body\",");
+        str_append(fields, "body,");
         break;
     case SEARCH_HEADER: /* fall through */
     case SEARCH_HEADER_ADDRESS: /* fall through */
@@ -876,7 +853,7 @@ elastic_add_definite_query(string_t *_fields, string_t *_fields_not,
             i_debug("fts_elastic: field %s was skipped", arg->hdr_field_name);
             return FALSE;
         }
-        str_printfa(fields, "\"%s\",", elastic_field_prepare(arg->hdr_field_name));
+        str_printfa(fields, "%s,", elastic_field_prepare(arg->hdr_field_name));
         break;
     default:
         return FALSE;
@@ -906,17 +883,13 @@ elastic_add_definite_query_args(string_t *fields, string_t *fields_not,
         }
 
         if (elastic_add_definite_query(fields, fields_not, value, arg)) {
-            /* the value is the same for every arg passed, only add the value
-             * to our search json once. */
+            /* the value is the same for every arg passed, only add once */
             if (!field_added) {
-                /* we always want to add the value */
-                str_append_json_escaped(value,
+                str_append_sql_escaped(value,
                         arg->value.str, strlen(arg->value.str));
             }
 
-            /* this is important to set. if this is FALSE, Dovecot will fail
-             * over to its regular built-in search to produce results for
-             * this argument. */
+            /* if this is FALSE, Dovecot falls back to its built-in search */
             arg->match_always = TRUE;
             field_added = TRUE;
         }
@@ -952,78 +925,76 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 
     pool_t pool = result->pool;
     string_t *query = str_new(pool, 1024);
-    string_t *match_query = str_new(pool, 1024);
-    string_t *fields = str_new(pool, 512);
-    string_t *fields_not = str_new(pool, 512);
+    string_t *match_query = str_new(pool, 512);
+    string_t *fields = str_new(pool, 256);
+    string_t *fields_not = str_new(pool, 256);
+    const char *username =
+        _backend->ns->owner != NULL ? _backend->ns->owner->username : "";
 
-    /* Generate JSON search query */
-    str_printfa(query, "{\"query\":{\"bool\":{\"filter\":["
-                      "{\"term\":{\"user\":\"%s\"}},",
-                _backend->ns->owner != NULL ? _backend->ns->owner->username : "");
+    /* Build SQL SELECT — transfer only uid, box, SCORE() to save bandwidth */
+    str_printfa(query, "SELECT uid, box, SCORE() FROM %s WHERE user='",
+                elastic_connection_get_index(backend->conn));
+    str_append_sql_escaped(query, username, strlen(username));
+    str_append_c(query, '\'');
 
-	hash_table_create(&mailboxes, default_pool, 0, str_hash, strcmp);
-	for (i = 0; boxes[i] != NULL; i++) ;
-	search_all_mailboxes = i > ELASTIC_QUERY_MAX_MAILBOX_COUNT;
-	if (!search_all_mailboxes)
-		str_append(query, "{\"terms\":{\"box\":[");
+    hash_table_create(&mailboxes, default_pool, 0, str_hash, strcmp);
+    for (i = 0; boxes[i] != NULL; i++) ;
+    search_all_mailboxes = i > ELASTIC_QUERY_MAX_MAILBOX_COUNT;
 
-    /* Append mailbox GUIDs */
-    for (int i = 0; boxes[i] != NULL; i++) {
-        if (fts_mailbox_get_guid(boxes[i], &box_guid) < 0) {
-            i_debug("Invalid mailbox GUID at index %d", i);
-            return -1;
+    if (!search_all_mailboxes) {
+        str_append(query, " AND box IN (");
+        for (int i = 0; boxes[i] != NULL; i++) {
+            if (fts_mailbox_get_guid(boxes[i], &box_guid) < 0) {
+                i_debug("Invalid mailbox GUID at index %d", i);
+                hash_table_destroy(&mailboxes);
+                return -1;
+            }
+            str_printfa(query, "'%s',", box_guid);
+            hash_table_insert(mailboxes, t_strdup_noconst(box_guid), boxes[i]);
         }
-		if (!search_all_mailboxes) {
-            str_printfa(query, "\"%s\",", box_guid);
-		}
-		hash_table_insert(mailboxes, t_strdup_noconst(box_guid), boxes[i]);
+        /* trim trailing comma */
+        str_delete(query, str_len(query) - 1, 1);
+        str_append_c(query, ')');
+    } else {
+        for (int i = 0; boxes[i] != NULL; i++) {
+            if (fts_mailbox_get_guid(boxes[i], &box_guid) < 0) continue;
+            hash_table_insert(mailboxes, t_strdup_noconst(box_guid), boxes[i]);
+        }
     }
 
-    str_delete(query, str_len(query) - 1, 1);
-    if (!search_all_mailboxes)
-        str_append(query, "]}}]");
-    else 
-        str_append(query, "]");
-
-    /* Attempt to build the match_query */
+    /* Build MATCH conditions from search args */
     if (!elastic_add_definite_query_args(fields, fields_not, match_query, args)) {
+        hash_table_destroy(&mailboxes);
         f_debug("return -1");
         return -1;
     }
 
-    /* Remove trailing commas */
+    /* Remove trailing commas from field lists */
     if (str_len(fields) > 0) str_delete(fields, str_len(fields) - 1, 1);
     if (str_len(fields_not) > 0) str_delete(fields_not, str_len(fields_not) - 1, 1);
 
-    /* Add default fields if none are provided */
-    if (str_len(fields) == 0 && str_len(fields_not) == 0) {
-        str_append(fields, "\"from\",\"to\",\"cc\",\"bcc\",\"sender\",\"subject\",\"body\"");
-    }
-
-    static const char JSON_MULTI_MATCH[] = 
-        "{\"multi_match\":{"
-            "\"query\":\"%s\","
-            "\"operator\":\"%s\","
-            "\"fields\":[%s]"
-        "}}";
+    /* Default: search all indexed fields */
+    if (str_len(fields) == 0 && str_len(fields_not) == 0)
+        str_append(fields, "from,to,cc,bcc,sender,subject,body");
 
     if (str_len(fields) > 0) {
-        str_append(query, ",\"must\":[");
-        str_printfa(query, JSON_MULTI_MATCH, str_c(match_query), operator_arg, str_c(fields));
-        str_append(query, "]");
+        str_append(query, " AND MATCH('");
+        str_append_str(query, fields);
+        str_append(query, "','");
+        str_append_str(query, match_query);
+        str_printfa(query, "','operator=%s')", operator_arg);
     }
 
     if (str_len(fields_not) > 0) {
-        str_append(query, ",\"must_not\":[");
-        str_printfa(query, JSON_MULTI_MATCH, str_c(match_query), operator_arg, str_c(fields_not));
-        str_append(query, "]");
+        str_append(query, " AND NOT MATCH('");
+        str_append_str(query, fields_not);
+        str_append(query, "','");
+        str_append_str(query, match_query);
+        str_printfa(query, "','operator=%s')", operator_arg);
     }
 
-    /* Elastic is limited to 10000 results by default */
-    str_append(query, "}},\"size\":10000,\"_source\":false}\n");
-
-    /* Send query to Elasticsearch */
-    ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
+    /* Send SQL query — cursor pagination handles >10000 results automatically */
+    ret = elastic_connection_sql(backend->conn, pool, query, 3, &elastic_results);
 
 	for (i = 0; elastic_results[i] != NULL; i++);
     f_debug("hits %d, elastic_results length %d", ret, i);

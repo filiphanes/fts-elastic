@@ -17,21 +17,32 @@
 #include "fts-elastic-plugin.h"
 #include "elastic-connection.h"
 
-#include "json-istream.h"
-#include "json-tree.h"
 #include <stdio.h>
 
 
+/* Results accumulated across cursor pages for one SQL call */
 struct elastic_search_context {
     pool_t pool;
     int found;
-	struct elastic_result ***results;
-    const char *scroll_id;
+    struct elastic_result ***results_r;
+
+    /* number of SELECT columns: 2 = uid,box  3 = uid,box,SCORE() */
+    int n_cols;
+
+    /* TSV parse state (reset per page) */
+    bool header_seen;
+
+    /* cursor value from last TSV page, p_strdup'd into pool */
+    const char *cursor;
+
+    /* result accumulation, keyed by box_guid */
+    HASH_TABLE(char *, struct elastic_result *) results_hash;
+    ARRAY(struct elastic_result *) results_array;
 };
 
 
 struct elastic_connection {
-	struct event *event;
+    struct event *event;
     struct mail_namespace *ns;
     const char *username;
 
@@ -44,10 +55,14 @@ struct elastic_connection {
     char *http_failure;
     int request_status;
 
+    /* index name extracted from http_base_path (e.g. "m") */
+    char *index_name;
+    /* /_sql?format=tsv path, respecting any proxy prefix */
+    char *sql_path;
+
     /* for streaming processing of results */
     struct istream *payload;
     struct io *io;
-	struct json_istream *json_input;
 
     enum elastic_post_type post_type;
 
@@ -88,7 +103,7 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     }
 
     conn = i_new(struct elastic_connection, 1);
-	conn->event = event_create(event_parent);
+    conn->event = event_create(event_parent);
     conn->ctx = i_new(struct elastic_search_context, 1);
     conn->ns = ns;
     conn->username = ns->owner ? ns->owner->username : "-";
@@ -105,14 +120,37 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     conn->debug = set->debug;
     conn->refresh_on_update = set->refresh_on_update;
 
+    /* Derive index name and SQL endpoint from the URL path.
+     * http_url->path is like "/m/" or "/prefix/m/".
+     * Strip trailing slash, then strip the last path segment (index name),
+     * leaving the root prefix. */
+    {
+        const char *path = http_url->path;
+        size_t len = strlen(path);
+
+        /* strip trailing slash */
+        if (len > 0 && path[len - 1] == '/') len--;
+
+        /* find start of last segment (the index name) */
+        size_t seg_start = len;
+        while (seg_start > 0 && path[seg_start - 1] != '/') seg_start--;
+
+        /* index_name = path[seg_start..len) */
+        conn->index_name = i_strndup(path + seg_start, len - seg_start);
+
+        /* sql_path = path[0..seg_start) + "_sql?format=tsv" */
+        conn->sql_path = i_strdup_printf("%.*s_sql?format=tsv",
+                                         (int)seg_start, path);
+    }
+
     /* guard against init being called multiple times */
     if (elastic_http_client == NULL) {
-		settings_event_add_filter_name(conn->event, FTS_ELASTIC_FILTER);
-		if (http_client_init_private_auto(conn->event, &elastic_http_client,
-						  &error) < 0) {
-			*error_r = t_strdup(error);
-			return -1;
-		}
+        settings_event_add_filter_name(conn->event, FTS_ELASTIC_FILTER);
+        if (http_client_init_private_auto(conn->event, &elastic_http_client,
+                                          &error) < 0) {
+            *error_r = t_strdup(error);
+            return -1;
+        }
     }
 
     *conn_r = conn;
@@ -128,13 +166,18 @@ void elastic_connection_deinit(struct elastic_connection *conn)
     if (conn != NULL) {
         i_free(conn->http_host);
         i_free(conn->http_base_path);
+        i_free(conn->index_name);
+        i_free(conn->sql_path);
         i_free(conn->ctx);
-        if (conn->json_input != NULL)
-            json_istream_destroy(&conn->json_input);
         event_unref(&conn->event);
         i_free(conn);
     }
     f_debug("end");
+}
+
+const char *elastic_connection_get_index(struct elastic_connection *conn)
+{
+    return conn->index_name;
 }
 
 /* Checks response status code from _bulk request */
@@ -143,7 +186,7 @@ elastic_connection_bulk_response(const struct http_response *response,
                                    struct elastic_connection *conn)
 {
     f_debug("start");
-    if (response != NULL && conn != NULL ) {
+    if (response != NULL && conn != NULL) {
         /* 200 OK, 204 continue */
         if (response->status / 100 != 2) {
             i_error("fts_elastic: Indexing failed: %s", response->reason);
@@ -153,77 +196,132 @@ elastic_connection_bulk_response(const struct http_response *response,
     f_debug("end");
 }
 
-/* Parses response payload to json from _search request */
+/* Parse one TSV data row and add its uid/box/score to ctx->results_hash */
 static void
-elastic_connection_payload_input(struct elastic_connection *conn)
+elastic_connection_parse_tsv_row(struct elastic_search_context *ctx,
+                                  const char *line)
+{
+    /* columns: uid \t box [\t SCORE()] */
+    const char *p = line;
+    const char *tab;
+    uint32_t uid;
+
+    /* parse uid */
+    tab = strchr(p, '\t');
+    if (tab == NULL) return;
+    char *uid_str = t_strndup(p, (size_t)(tab - p));
+    if (str_to_uint32(uid_str, &uid) < 0 || uid == 0) {
+        i_warning("fts_elastic: invalid uid in SQL result row: %s", line);
+        return;
+    }
+
+    /* parse box guid */
+    p = tab + 1;
+    const char *box_start = p;
+    tab = (ctx->n_cols >= 3) ? strchr(p, '\t') : NULL;
+    size_t box_len = (tab != NULL) ? (size_t)(tab - box_start) : strlen(box_start);
+    if (box_len == 0) {
+        i_warning("fts_elastic: empty box guid in SQL result row: %s", line);
+        return;
+    }
+    char *box_guid = p_strndup(ctx->pool, box_start, box_len);
+
+    /* find or create elastic_result for this box */
+    struct elastic_result *result = hash_table_lookup(ctx->results_hash, box_guid);
+    if (result == NULL) {
+        result = p_new(ctx->pool, struct elastic_result, 1);
+        result->box_guid = box_guid;
+        p_array_init(&result->uids, ctx->pool, 32);
+        p_array_init(&result->scores, ctx->pool, 32);
+        hash_table_insert(ctx->results_hash, box_guid, result);
+        array_push_back(&ctx->results_array, &result);
+    }
+
+    seq_range_array_add(&result->uids, uid);
+    ctx->found++;
+
+    /* parse score if present */
+    if (ctx->n_cols >= 3 && tab != NULL) {
+        float score = (float)strtod(tab + 1, NULL);
+        if (score > 0.0f) {
+            struct fts_score_map *sm = array_append_space(&result->scores);
+            sm->uid = uid;
+            sm->score = score;
+        }
+    }
+}
+
+/* Process available lines from the SQL TSV payload stream */
+static void
+elastic_connection_sql_payload_input(struct elastic_connection *conn)
 {
     f_debug("start");
-    struct json_tree *tree = NULL;
-    int ret;
+    const char *line;
 
-    ret = json_istream_read_tree(conn->json_input, &tree);
-    if (ret == 0) {
-        /* more data needed; io callback will fire again */
-        f_debug("end (waiting for more data)");
-        return;
+    while ((line = i_stream_read_next_line(conn->payload)) != NULL) {
+        /* first line is the TSV header row — skip it */
+        if (!conn->ctx->header_seen) {
+            conn->ctx->header_seen = TRUE;
+            continue;
+        }
+
+        if (*line == '\0')
+            continue;
+
+        /* count tabs to tell data rows from the cursor token */
+        int ntabs = 0;
+        for (const char *c = line; *c != '\0'; c++)
+            if (*c == '\t') ntabs++;
+
+        if (ntabs == conn->ctx->n_cols - 1) {
+            elastic_connection_parse_tsv_row(conn->ctx, line);
+        } else if (ntabs == 0) {
+            /* cursor appended by ES after the last data row */
+            conn->ctx->cursor = p_strdup(conn->ctx->pool, line);
+        }
     }
 
-    /* done (success or error) — clean up io and payload */
-    io_remove(&conn->io);
-    i_stream_unref(&conn->payload);
-
-    if (ret < 0) {
-        i_error("fts_elastic: json parse error: %s",
-                json_istream_get_error(conn->json_input));
+    if (conn->payload->stream_errno != 0) {
+        i_error("fts_elastic: SQL payload read error: %s",
+                i_stream_get_error(conn->payload));
         conn->request_status = -1;
-        json_istream_destroy(&conn->json_input);
-        f_debug("end (error)");
-        return;
     }
 
-    json_istream_destroy(&conn->json_input);
-
-    if (tree != NULL) {
-        elastic_connection_json(conn, json_tree_get_root(tree));
-        json_tree_unref(&tree);
+    if (conn->payload->eof || conn->payload->stream_errno != 0) {
+        io_remove(&conn->io);
+        i_stream_unref(&conn->payload);
     }
     f_debug("end");
 }
 
-/* Parses HTTP response from _search request */
+/* HTTP response handler for SQL requests */
 static void
-elastic_connection_search_response(const struct http_response *response,
-                                   struct elastic_connection *conn)
+elastic_connection_sql_response(const struct http_response *response,
+                                struct elastic_connection *conn)
 {
     f_debug("start");
-    /* 404's usually mean the index is missing.
-     * it could mean you also hit a non-ES service
-     * 400 means request json is malformed */
     if (response->status / 100 != 2) {
-        i_error("fts_elastic: search failed: %d %s",
-                    response->status, response->reason);
+        i_error("fts_elastic: SQL request failed: %d %s",
+                response->status, response->reason);
         conn->request_status = -1;
+        return;
     }
 
     if (response->payload == NULL) {
-        i_error("fts_elastic: search failed: empty response payload");
+        i_error("fts_elastic: SQL response: empty payload");
         conn->request_status = -1;
-        f_debug("return");
         return;
     }
 
     i_stream_ref(response->payload);
     conn->payload = response->payload;
-    conn->json_input = json_istream_create(conn->payload,
-                    JSON_ISTREAM_TYPE_NORMAL, NULL, 0);
     conn->io = io_add_istream(response->payload,
-                    elastic_connection_payload_input, conn);
-    elastic_connection_payload_input(conn);
+                    elastic_connection_sql_payload_input, conn);
+    elastic_connection_sql_payload_input(conn);
     f_debug("end");
 }
 
-/* Callback from HTTP request
- * according to post_type decides which callback calls */
+/* Callback from HTTP request — dispatches by post_type */
 static void
 elastic_connection_http_response(const struct http_response *response,
                                  struct elastic_connection *conn)
@@ -231,8 +329,8 @@ elastic_connection_http_response(const struct http_response *response,
     f_debug("start");
     if (response != NULL && conn != NULL) {
         switch (conn->post_type) {
-        case ELASTIC_POST_TYPE_SEARCH:
-            elastic_connection_search_response(response, conn);
+        case ELASTIC_POST_TYPE_SQL:
+            elastic_connection_sql_response(response, conn);
             break;
         case ELASTIC_POST_TYPE_BULK:
             elastic_connection_bulk_response(response, conn);
@@ -270,10 +368,10 @@ int elastic_connection_post(struct elastic_connection *conn,
                                    path, elastic_connection_http_response, conn);
     http_client_request_set_port(http_req, conn->http_port);
     http_client_request_set_ssl(http_req, conn->http_ssl);
-    /* XXX: should be application/x-ndjson for bulk updates, but why when this works? */
     http_client_request_add_header(http_req, "Content-Type", "application/json");
     if (conn->basic_auth_username != NULL && conn->basic_auth_pass != NULL) {
-        http_client_request_set_auth_simple(http_req, conn->basic_auth_username, conn->basic_auth_pass);
+        http_client_request_set_auth_simple(http_req, conn->basic_auth_username,
+                                             conn->basic_auth_pass);
     }
 
     post_payload = i_stream_create_from_buffer(data);
@@ -288,143 +386,7 @@ int elastic_connection_post(struct elastic_connection *conn,
     return conn->request_status;
 }
 
-/* Iterates over json array hits
- * and fills fts_result->definite_uids
- * and fts->result->scores if present
- */
-void elastic_connection_search_hits(struct elastic_search_context *ctx,
-                                    struct json_tree_node *hits)
-{
-    f_debug("start");
-    struct elastic_result *result;
-    ARRAY(struct elastic_result *) results_array;
-    struct fts_score_map *scores;
-    struct json_tree_node *hit;
-    struct json_tree_node *jval;
-    uint32_t uid = 0;
-    char *box_guid = "";
-    const char *_id;
-    char **id_part;
-	HASH_TABLE(char *, struct elastic_result *) results_hash;
-
-    if (ctx == NULL || hits == NULL) {
-        i_error("fts_elastic: select_json: critical error while processing result JSON");
-        f_debug("return");
-        return;
-    }
-
-    if (!json_tree_node_is_array(hits)) {
-        i_error("fts_elastic: select_json: response hits are not array");
-        f_debug("return");
-        return;
-    }
-
-	hash_table_create(&results_hash, ctx->pool, 0, str_hash, strcmp);
-	p_array_init(&results_array, ctx->pool, 32);
-
-    for (hit = json_tree_node_get_child(hits);
-         hit != NULL;
-         hit = json_tree_node_get_next(hit)) {
-        jval = json_tree_node_get_member(hit, "_id");
-        if (jval == NULL) {
-            i_warning("fts_elastic: key _id not in search response hit");
-            continue;
-        }
-
-        _id = json_tree_node_get_str(jval);
-        id_part = p_strsplit_spaces(ctx->pool, _id, "/");
-        if (str_to_uint32(*id_part, &uid) < 0 || uid == 0) {
-            i_warning("fts_elastic: uid <= 0 in _id:\"%s\"", _id);
-            continue;
-        }
-        id_part++;
-        if (*id_part == NULL) {
-            i_warning("fts_elastic: mailbox guid not found in: %s", _id);
-            continue;
-        }
-        if (strcmp(box_guid, *id_part) != 0) {
-            box_guid = *id_part;
-            result = hash_table_lookup(results_hash, box_guid);
-            if (result == NULL) {
-                result = p_new(ctx->pool, struct elastic_result, 1);
-                result->box_guid = box_guid;
-                p_array_init(&result->uids, ctx->pool, 32);
-                p_array_init(&result->scores, ctx->pool, 32);
-                hash_table_insert(results_hash, box_guid, result);
-                array_push_back(&results_array, &result);
-            }
-        }
-        ctx->found += 1;
-        jval = json_tree_node_get_member(hit, "_score");
-        if (!seq_range_array_add(&result->uids, uid) && jval != NULL) {
-            scores = array_append_space(&result->scores);
-            scores->uid = uid;
-            scores->score = (float)strtod(json_tree_node_as_str(jval), NULL);
-        }
-    }
-    hash_table_destroy(&results_hash);
-    array_append_zero(&results_array);
-    *ctx->results = array_front_modifiable(&results_array);
-    f_debug("end");
-}
-
-
-/* extract values from resulting json object */
-void elastic_connection_json(struct elastic_connection *conn,
-                             struct json_tree_node *jroot)
-{
-    f_debug("start");
-    struct json_tree_node *jvalue = NULL;
-
-    i_assert(jroot != NULL);
-
-    /* Check for error description */
-    jvalue = json_tree_node_get_member(jroot, "error");
-    if (jvalue != NULL) {
-        i_error("fts_elastic: %s", json_tree_node_as_str(jvalue));
-        f_debug("return");
-        return;
-    }
-
-    /* Check if errors are present in response */
-    if (json_tree_node_get_member(jroot, "errors") != NULL) {
-        i_error("fts_elastic: errors in response");
-    }
-
-    /* Check if _scroll_id is present in response */
-    jvalue = json_tree_node_get_member(jroot, "_scroll_id");
-    if (jvalue != NULL) {
-        conn->ctx->scroll_id = p_strdup(conn->ctx->pool,
-                                        json_tree_node_get_str(jvalue));
-    }
-
-    switch (conn->post_type) {
-    case ELASTIC_POST_TYPE_SEARCH:
-        jvalue = json_tree_node_get_member(jroot, "hits");
-        if (jvalue == NULL) {
-            i_error("fts_elastic: no .hits in search response");
-            break;
-        }
-        jvalue = json_tree_node_get_member(jvalue, "hits");
-        if (jvalue == NULL) {
-            i_error("fts_elastic: no .hits.hits in search response");
-            break;
-        }
-        elastic_connection_search_hits(conn->ctx, jvalue);
-        break;
-    case ELASTIC_POST_TYPE_BULK:
-    case ELASTIC_POST_TYPE_REFRESH:
-    case ELASTIC_POST_TYPE_DELETE:
-    case ELASTIC_POST_TYPE_DELETE_BY_QUERY:
-        /* not implemented */
-        break;
-    }
-    f_debug("end");
-}
-
-/* Performs elastic _bulk request
- * checking only response status
- */
+/* Performs elastic _bulk request, checking only response status */
 int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd)
 {
     f_debug("start");
@@ -472,32 +434,92 @@ int elastic_connection_refresh(struct elastic_connection *conn)
     return 0;
 }
 
-/* Performs elastic search query
- * parses json response
- * and fills fts_result
- */
-int elastic_connection_search(struct elastic_connection *conn, pool_t pool, string_t *query, struct elastic_result ***results)
+/* Append a JSON-encoded string value (for embedding SQL in JSON body) */
+static void
+str_append_json_string(string_t *dest, const char *s)
+{
+    str_append_c(dest, '"');
+    for (; *s != '\0'; s++) {
+        if (*s == '"')       str_append(dest, "\\\"");
+        else if (*s == '\\') str_append(dest, "\\\\");
+        else if (*s == '\n') str_append(dest, "\\n");
+        else if (*s == '\r') str_append(dest, "\\r");
+        else if (*s == '\t') str_append(dest, "\\t");
+        else str_append_c(dest, *s);
+    }
+    str_append_c(dest, '"');
+}
+
+/* Execute an ES SQL query via /_sql?format=tsv.
+ * n_cols: 2 = SELECT uid, box  (no scores)
+ *         3 = SELECT uid, box, SCORE()
+ * Follows cursor pages automatically to handle >10000 results.
+ * Returns total hit count, or -1 on error. */
+int elastic_connection_sql(struct elastic_connection *conn, pool_t pool,
+                           string_t *sql, int n_cols,
+                           struct elastic_result ***results_r)
 {
     f_debug("start");
-    const char *path = NULL;
 
-    if (conn == NULL || query == NULL || results == NULL) {
-        i_error("fts_elastic: critical error during search");
-        f_debug("return -1");
+    if (conn == NULL || sql == NULL || results_r == NULL) {
+        i_error("fts_elastic: sql: invalid arguments");
         return -1;
     }
 
+    /* initialise context — results_hash/results_array persist across pages */
     i_zero(conn->ctx);
     conn->ctx->pool = pool;
-    conn->ctx->results = results;
+    conn->ctx->n_cols = n_cols;
+    conn->ctx->results_r = results_r;
     conn->ctx->found = 0;
-    conn->post_type = ELASTIC_POST_TYPE_SEARCH;
+    conn->ctx->cursor = NULL;
+    conn->ctx->header_seen = FALSE;
+    p_array_init(&conn->ctx->results_array, pool, 8);
+    hash_table_create(&conn->ctx->results_hash, pool, 0, str_hash, strcmp);
 
-	i_free_and_null(conn->http_failure);
+    conn->post_type = ELASTIC_POST_TYPE_SQL;
+    i_free_and_null(conn->http_failure);
 
-    path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
-                       conn->username, NULL);
-    elastic_connection_post(conn, path, query);
+    /* build initial request body: {"query":"<sql>","fetch_size":10000}
+     * Note: /_sql does not support ?routing= so searches fan out to all shards.
+     * Correctness is ensured by the WHERE user='...' clause in every query. */
+    string_t *body = str_new(default_pool, str_len(sql) + 64);
+    str_append(body, "{\"query\":");
+    str_append_json_string(body, str_c(sql));
+    str_append(body, ",\"fetch_size\":10000}");
+
+    elastic_connection_post(conn, conn->sql_path, body);
+    str_free(&body);
+
+    if (conn->request_status < 0)
+        goto done;
+
+    /* follow cursor pages until exhausted */
+    while (conn->ctx->cursor != NULL) {
+        const char *cursor = conn->ctx->cursor;
+        conn->ctx->cursor = NULL;
+        conn->ctx->header_seen = FALSE;
+
+        string_t *cursor_body = str_new(default_pool, 256);
+        str_append(cursor_body, "{\"cursor\":");
+        /* cursor is a base64 blob — just JSON-quote it without escaping */
+        str_append_c(cursor_body, '"');
+        str_append(cursor_body, cursor);
+        str_append_c(cursor_body, '"');
+        str_append(cursor_body, "}");
+
+        elastic_connection_post(conn, conn->sql_path, cursor_body);
+        str_free(&cursor_body);
+
+        if (conn->request_status < 0)
+            goto done;
+    }
+
+done:
+    /* NULL-terminate the results array */
+    array_append_zero(&conn->ctx->results_array);
+    *results_r = array_front_modifiable(&conn->ctx->results_array);
+    hash_table_destroy(&conn->ctx->results_hash);
 
     if (conn->request_status < 0) {
         f_debug("return -1");
@@ -508,69 +530,7 @@ int elastic_connection_search(struct elastic_connection *conn, pool_t pool, stri
     return conn->ctx->found;
 }
 
-/* Performs elastic search query with scroll
- * parses json response
- * and fills fts_result
- * @deprecated use search_after (optionally with point in time)
- */
-int elastic_connection_search_scroll(struct elastic_connection *conn, pool_t pool, string_t *query, struct elastic_result ***results)
-{
-    f_debug("start");
-    static const char *SCROLL_TIMEOUT = "7s";
-    const char *path = NULL;
-
-    if (conn == NULL || query == NULL || results == NULL) {
-        i_error("fts_elastic: critical error during search scroll");
-        f_debug("return -1");
-        return -1;
-    }
-
-    i_zero(conn->ctx);
-    i_assert(conn->ctx != NULL);
-    conn->ctx->pool = pool;
-    conn->ctx->results = results;
-    conn->ctx->found = 0;
-    conn->post_type = ELASTIC_POST_TYPE_SEARCH;
-
-	i_free_and_null(conn->http_failure);
-
-    path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
-                        conn->username, "&scroll=", SCROLL_TIMEOUT, NULL);
-    elastic_connection_post(conn, path, query);
-
-    if (conn->ctx->scroll_id == NULL) {
-        i_error("fts_elastic: _scroll_id not found in scroll response");
-        f_debug("return 0");
-        return 0;
-    }
-
-    /* TODO: strip index (last segment) from path to allow elastic behind proxy */
-    path = "/_search/scroll";
-    while (conn->ctx->found >= 9998) {
-        conn->ctx->found = 0;
-        str_truncate(query, 0);
-        str_printfa(query, "{\"scroll\":\"%s\", \"scroll_id\":\"%s\"}",
-                            SCROLL_TIMEOUT,
-                            conn->ctx->scroll_id);
-        elastic_connection_post(conn, path, query);
-    }
-    /* DELETE search scroll context */
-    conn->post_type = ELASTIC_POST_TYPE_DELETE;
-    str_truncate(query, 0);
-    str_printfa(query, "{\"scroll_id\":\"%s\"}", conn->ctx->scroll_id);
-    elastic_connection_post(conn, path, query);
-
-    if (conn->request_status < 0) {
-        f_debug("return -1");
-        return -1;
-    }
-
-    f_debug("return %d", conn->ctx->found);
-    return conn->ctx->found;
-}
-
-/* Performs elastic search delete by query
- */
+/* Performs elastic delete-by-query */
 int elastic_connection_delete_by_query(struct elastic_connection *conn,
                                        pool_t pool, string_t *query)
 {
@@ -578,7 +538,7 @@ int elastic_connection_delete_by_query(struct elastic_connection *conn,
     const char *path = NULL;
 
     if (conn == NULL || query == NULL) {
-        i_error("fts_elastic: critical error during search scroll");
+        i_error("fts_elastic: delete_by_query: conn or query is NULL");
         f_debug("return -1");
         return -1;
     }
@@ -587,10 +547,10 @@ int elastic_connection_delete_by_query(struct elastic_connection *conn,
     conn->ctx->pool = pool;
     conn->post_type = ELASTIC_POST_TYPE_DELETE_BY_QUERY;
 
-	i_free_and_null(conn->http_failure);
+    i_free_and_null(conn->http_failure);
 
     path = t_strconcat(conn->http_base_path, "_delete_by_query?routing=",
-                                                    conn->username, NULL);
+                       conn->username, NULL);
     elastic_connection_post(conn, path, query);
 
     if (conn->request_status < 0) {
@@ -598,6 +558,6 @@ int elastic_connection_delete_by_query(struct elastic_connection *conn,
         return -1;
     }
 
-    f_debug("return %d", conn->ctx->found);
-    return conn->ctx->found;
+    f_debug("return 0");
+    return 0;
 }
