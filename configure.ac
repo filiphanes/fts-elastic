@@ -33,6 +33,29 @@ AC_DISABLE_STATIC
 # Checks for programs.
 AC_PROG_CC
 
+# Check for json-c headers and library (handle Homebrew on macOS)
+JSON_CFLAGS=""
+JSON_LDFLAGS=""
+AC_MSG_CHECKING([for json-c/json.h])
+for dir in /opt/homebrew/include /usr/local/include /usr/include /include; do
+    if test -f "$dir/json-c/json.h"; then
+        JSON_CFLAGS="-I$dir"
+        # Also check for corresponding lib directory
+        libdir=$(echo "$dir" | sed 's/include/lib/')
+        if test -d "$libdir" -o -d "/opt/homebrew/opt/json-c/lib"; then
+            JSON_LDFLAGS="-L/opt/homebrew/opt/json-c/lib"
+        fi
+        break
+    fi
+done
+if test -n "$JSON_CFLAGS"; then
+    AC_MSG_RESULT([found in $JSON_CFLAGS])
+    CPPFLAGS="$CPPFLAGS $JSON_CFLAGS"
+    LDFLAGS="$LDFLAGS $JSON_LDFLAGS"
+else
+    AC_MSG_ERROR([json-c/json.h not found. Install json-c or set CPPFLAGS])
+fi
+
 # Checks for libraries.
 AC_SEARCH_LIBS([json_object_from_file], [json json-c], [], [ AC_MSG_ERROR([no json-c available]) ])
 AC_SEARCH_LIBS([json_object_object_get_ex], [json json-c], [ AC_DEFINE([JSON_HAS_GET_EX], [1], [Define if we have json_object_object_get_ex])], [])
