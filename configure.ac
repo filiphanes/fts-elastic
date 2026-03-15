@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.53])
-AC_INIT([fts-elastic], [0.1.0], [https://github.com/filiphanes/fts-elastic])
+AC_INIT([fts-elastic], [2.0.0], [https://github.com/filiphanes/fts-elastic])
 AM_INIT_AUTOMAKE([no-define foreign tar-ustar])
 AC_OUTPUT(Makefile src/Makefile)
 AC_CONFIG_SRCDIR([src])
@@ -20,6 +20,8 @@ AC_DEFINE_UNQUOTED(fts_elastic_VERSION, "$PACKAGE_VERSION",
 #
 
 DC_DOVECOT
+AS_VERSION_COMPARE([2.4.0], [$DOVECOT_VERSION], [], [],
+    [AC_MSG_ERROR([Dovecot >= 2.4.0 is required (found $DOVECOT_VERSION). Use fts-elastic 0.x for Dovecot 2.3.])])
 DC_DOVECOT_MODULEDIR
 LIBDOVECOT_INCLUDE="$LIBDOVECOT_INCLUDE $LIBDOVECOT_STORAGE_INCLUDE"
 CFLAGS="$DOVECOT_CFLAGS -I\$(top_srcdir)"
