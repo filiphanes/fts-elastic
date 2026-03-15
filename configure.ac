@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.53])
-AC_INIT([fts-elastic], [0.1.0], [https://github.com/filiphanes/fts-elastic])
+AC_INIT([fts-elastic], [2.0.0], [https://github.com/filiphanes/fts-elastic])
 AM_INIT_AUTOMAKE([no-define foreign tar-ustar])
 AC_OUTPUT(Makefile src/Makefile)
 AC_CONFIG_SRCDIR([src])
@@ -20,6 +20,8 @@ AC_DEFINE_UNQUOTED(fts_elastic_VERSION, "$PACKAGE_VERSION",
 #
 
 DC_DOVECOT
+AS_VERSION_COMPARE([2.4.0], [$DOVECOT_VERSION], [], [],
+    [AC_MSG_ERROR([Dovecot >= 2.4.0 is required (found $DOVECOT_VERSION). Use fts-elastic 0.x for Dovecot 2.3.])])
 DC_DOVECOT_MODULEDIR
 LIBDOVECOT_INCLUDE="$LIBDOVECOT_INCLUDE $LIBDOVECOT_STORAGE_INCLUDE"
 CFLAGS="$DOVECOT_CFLAGS -I\$(top_srcdir)"
@@ -32,6 +34,29 @@ AC_DISABLE_STATIC
 
 # Checks for programs.
 AC_PROG_CC
+
+# Check for json-c headers and library (handle Homebrew on macOS)
+JSON_CFLAGS=""
+JSON_LDFLAGS=""
+AC_MSG_CHECKING([for json-c/json.h])
+for dir in /opt/homebrew/include /usr/local/include /usr/include /include; do
+    if test -f "$dir/json-c/json.h"; then
+        JSON_CFLAGS="-I$dir"
+        # Also check for corresponding lib directory
+        libdir=$(echo "$dir" | sed 's/include/lib/')
+        if test -d "$libdir" -o -d "/opt/homebrew/opt/json-c/lib"; then
+            JSON_LDFLAGS="-L/opt/homebrew/opt/json-c/lib"
+        fi
+        break
+    fi
+done
+if test -n "$JSON_CFLAGS"; then
+    AC_MSG_RESULT([found in $JSON_CFLAGS])
+    CPPFLAGS="$CPPFLAGS $JSON_CFLAGS"
+    LDFLAGS="$LDFLAGS $JSON_LDFLAGS"
+else
+    AC_MSG_ERROR([json-c/json.h not found. Install json-c or set CPPFLAGS])
+fi
 
 # Checks for libraries.
 AC_SEARCH_LIBS([json_object_from_file], [json json-c], [], [ AC_MSG_ERROR([no json-c available]) ])
