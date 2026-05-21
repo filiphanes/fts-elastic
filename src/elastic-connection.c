@@ -214,8 +214,17 @@ elastic_connection_search_response(const struct http_response *response,
 
     i_stream_ref(response->payload);
     conn->payload = response->payload;
+    /* Elasticsearch scroll/search "hits" arrays routinely exceed Dovecot's
+       default 1024-item parser limit (scroll batches are typically 10000),
+       which aborts parsing before _scroll_id is extracted. */
+    struct json_limits limits = {
+        .max_name_size = JSON_DEFAULT_MAX_NAME_SIZE,
+        .max_string_size = JSON_DEFAULT_MAX_STRING_SIZE,
+        .max_nesting = JSON_DEFAULT_MAX_NESTING,
+        .max_list_items = 1000000,
+    };
     conn->json_input = json_istream_create(conn->payload,
-                    JSON_ISTREAM_TYPE_NORMAL, NULL, 0);
+                    JSON_ISTREAM_TYPE_NORMAL, &limits, 0);
     conn->io = io_add_istream(response->payload,
                     elastic_connection_payload_input, conn);
     elastic_connection_payload_input(conn);
