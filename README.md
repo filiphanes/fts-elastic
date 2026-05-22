@@ -6,9 +6,9 @@ Dovecot communicates to ES using HTTP/JSON queries. It supports automatic indexi
 [![Packaging status](https://repology.org/badge/vertical-allrepos/dovecot-fts-elastic.svg)](https://repology.org/project/dovecot-fts-elastic/versions)
 
 ## Requirements
-* Dovecot 2.2+
+* Dovecot 2.4+
 * JSON-C
-* ElasticSearch 6, 7, 8
+* ElasticSearch 6, 7, 8, 9
 * Autoconf 2.53+
 
 ## Compiling
@@ -34,18 +34,18 @@ Create an index in Elasticsearch:
 
 Create /etc/dovecot/conf.d/90-fts.conf with content:
 
-	mail_plugins = $mail_plugins fts fts_elastic
+    mail_plugins {
+        fts = yes
+        fts_elastic = yes
+    }
 
-	plugin {
-	  fts = elastic
-	  fts_elastic = debug url=http://localhost:9200/m/ bulk_size=5000000 refresh=fts rawlog_dir=/var/log/fts-elastic/
-
-	  # no indexes new emails when user make search
-	  # yes indexes every email when delivered
-	  fts_autoindex = no
-	  fts_autoindex_exclude = \Junk
-	  fts_autoindex_exclude2 = \Trash
-	}
+    fts elastic {
+        url = http://elastic:9200/m/
+        bulk_size = 5000000
+        refresh_by_fts = yes
+        refresh_on_update = no
+        # http_client_rawlog_dir = /var/log/fts-elastic/
+    }
 
 and (re)start dovecot:
 
@@ -59,7 +59,6 @@ and (re)start dovecot:
   * never: leave it to elastic, indexed emails may not be searchable immediately
 * debug Enables HTTP debugging
 * use_sql enables using [Elastic SQL REST API](https://www.elastic.co/guide/en/elasticsearch/reference/6.8/sql-rest.html), which returns csv results which are more efficient than json results
-* rawlog_dir is directory where HTTP communication with elasticsearch server is written (useful for debugging plugin or elastic schema)
 
 ## ElasticSearch index
 This plugin stores all message in one elastic index. You can use [sharding](https://www.elastic.co/guide/en/elasticsearch/reference/current/scalability.html) to support large numbers of users. Since it uses [routing key](https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-routing-field.html), updates and searches are accessing only one shard.
