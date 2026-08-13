@@ -498,6 +498,11 @@ int elastic_connection_search(struct elastic_connection *conn, pool_t pool, stri
         return -1;
     }
 
+    /* elastic_connection_search_hits() fills this in, but it is never called
+       when the request fails or the response carries no hits. Callers must
+       always see a defined value. */
+    *results = NULL;
+
     i_zero(conn->ctx);
     conn->ctx->pool = pool;
     conn->ctx->results = results;
@@ -536,6 +541,8 @@ int elastic_connection_search_scroll(struct elastic_connection *conn, pool_t poo
         f_debug("return -1");
         return -1;
     }
+
+    *results = NULL;
 
     i_zero(conn->ctx);
     i_assert(conn->ctx != NULL);

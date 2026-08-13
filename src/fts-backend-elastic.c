@@ -227,7 +227,7 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
     const char *box_guid = NULL;
     pool_t pool;
     string_t *query;
-    struct elastic_result **elastic_results;
+    struct elastic_result **elastic_results = NULL;
     int ret;
 
     /* ensure our backend has been initialised */
@@ -268,7 +268,8 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
         box_guid);
 
     ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
-    if (elastic_results[0] != NULL && seq_range_count(&elastic_results[0]->uids) > 0) {
+    if (elastic_results != NULL && elastic_results[0] != NULL &&
+        seq_range_count(&elastic_results[0]->uids) > 0) {
         struct seq_range_iter iter;
         seq_range_array_iter_init(&iter, &elastic_results[0]->uids);
         seq_range_array_iter_nth(&iter, 0, last_uid_r);
@@ -670,7 +671,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
     existing_guids = str_new(pool, 512);
     p_array_init(&uids, pool, 4*1024);
     p_array_init(&expunged_uids, pool, 512);
-	struct elastic_result **elastic_results;
+	struct elastic_result **elastic_results = NULL;
     if (backend->backend.ns->owner) {
         username = backend->backend.ns->owner->username;
     }
@@ -770,7 +771,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
             continue;
         }
         array_clear(&expunged_uids);
-        if (elastic_results[0] != NULL) {
+        if (elastic_results != NULL && elastic_results[0] != NULL) {
             f_debug("appending result uids %d", seq_range_count(&elastic_results[0]->uids));
             array_append_array(&expunged_uids, &(elastic_results[0]->uids));
         }
@@ -781,7 +782,7 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         f_debug("expunging uids");
         fts_backend_elastic_expunge_uids(_backend, box, expunged_uids);
 
-        if (elastic_results[0] == NULL) continue;
+        if (elastic_results == NULL || elastic_results[0] == NULL) continue;
         /* find missing and set last uid before first missing uid */
         seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
         seq_range_array_iter_init(&iter, &uids);
@@ -929,7 +930,7 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
     struct elastic_fts_backend *backend = (struct elastic_fts_backend *)_backend;
     const char *operator_arg = (flags & FTS_LOOKUP_FLAG_AND_ARGS) ? "and" : "or";
     const char *box_guid = NULL;
-	struct elastic_result **elastic_results;
+	struct elastic_result **elastic_results = NULL;
 	struct fts_result *fts_result;
 	ARRAY(struct fts_result) fts_results;
 	HASH_TABLE(char *, struct mailbox *) mailboxes;
@@ -944,6 +945,10 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
     }
 
     pool_t pool = result->pool;
+    /* Leave a valid NULL-terminated box_results behind on every exit path.
+       fts_backend_lookup_multi() substitutes one itself when we return 0, but
+       fts_backend_elastic_lookup() calls us directly and has no such wrapper. */
+    result->box_results = p_new(pool, struct fts_result, 1);
     string_t *query = str_new(pool, 1024);
     string_t *match_query = str_new(pool, 1024);
     string_t *fields = str_new(pool, 512);
@@ -954,8 +959,13 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
                       "{\"term\":{\"user\":\"%s\"}},",
                 _backend->ns->owner != NULL ? _backend->ns->owner->username : "");
 
-	hash_table_create(&mailboxes, default_pool, 0, str_hash, strcmp);
 	for (i = 0; boxes[i] != NULL; i++) ;
+	if (i == 0) {
+		/* nothing to search in, the query below would be malformed */
+		f_debug("return 0");
+		return 0;
+	}
+	hash_table_create(&mailboxes, default_pool, 0, str_hash, strcmp);
 	search_all_mailboxes = i > ELASTIC_QUERY_MAX_MAILBOX_COUNT;
 	if (!search_all_mailboxes)
 		str_append(query, "{\"terms\":{\"box\":[");
@@ -964,6 +974,7 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
     for (int i = 0; boxes[i] != NULL; i++) {
         if (fts_mailbox_get_guid(boxes[i], &box_guid) < 0) {
             i_debug("Invalid mailbox GUID at index %d", i);
+            hash_table_destroy(&mailboxes);
             return -1;
         }
 		if (!search_all_mailboxes) {
@@ -980,6 +991,7 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 
     /* Attempt to build the match_query */
     if (!elastic_add_definite_query_args(fields, fields_not, match_query, args)) {
+        hash_table_destroy(&mailboxes);
         f_debug("return -1");
         return -1;
     }
@@ -1017,6 +1029,12 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
 
     /* Send query to Elasticsearch */
     ret = elastic_connection_search(backend->conn, pool, query, &elastic_results);
+    if (ret < 0 || elastic_results == NULL) {
+        /* request failed or response carried no hits at all */
+        hash_table_destroy(&mailboxes);
+        f_debug("return %d", ret);
+        return ret;
+    }
 
 	for (i = 0; elastic_results[i] != NULL; i++);
     f_debug("hits %d, elastic_results length %d", ret, i);
@@ -1063,12 +1081,16 @@ fts_backend_elastic_lookup(struct fts_backend *_backend, struct mailbox *box,
     result_multi->search_state = result->search_state;
     int ret = fts_backend_elastic_lookup_multi(_backend, boxes, args, flags, result_multi);
 
-    /* Copy values from first result */
-    struct fts_result *box_result = result_multi->box_results;
     result->box = box;
-    f_debug("definite_uids %p", box_result->definite_uids);
-    f_debug("maybe_uids %p", box_result->maybe_uids);
-    f_debug("scores %p", box_result->scores);
+
+    /* Copy values from first result.
+       box_results is NULL when lookup_multi() failed before running the
+       query and it points at a bare terminator when nothing matched. */
+    struct fts_result *box_result = result_multi->box_results;
+    if (box_result == NULL || box_result->box == NULL) {
+        f_debug("no box results, return %d", ret);
+        return ret;
+    }
     if (array_is_created(&box_result->definite_uids))
         result->definite_uids = box_result->definite_uids;
     if (array_is_created(&box_result->maybe_uids))
