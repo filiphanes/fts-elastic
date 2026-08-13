@@ -278,8 +278,8 @@ fts_backend_elastic_get_last_uid(struct fts_backend *_backend,
         *last_uid_r = 0;
     }
 
+    /* query is allocated from pool, unreffing it releases the string too */
     pool_unref(&pool);
-    str_free(&query);
 
     if (ret < 0) {
         f_debug("return -1");
@@ -329,21 +329,22 @@ fts_backend_elastic_update_deinit(struct fts_backend_update_context *_ctx)
 
     backend = (struct elastic_fts_backend *)_ctx->backend;
 
-    /* clean-up: expunges don't need as much clean-up */
+    /* expunges don't need the bulk request flushed here */
     if (!ctx->expunges) {
         /* this gets called when the last message is finished, so close it up */
         fts_backend_elastic_bulk_end(ctx);
-
-        /* cleanup */
         i_zero(&ctx->box_guid);
-        str_free(&ctx->current_key);
-        str_free(&ctx->current_value);
-        array_foreach_modifiable(&ctx->fields, field) {
-            str_free(&field->value);
-            i_free(field->key);
-        }
-    	array_free(&ctx->fields);
     }
+
+    /* update_init() always allocates these from default_pool, so they must be
+       freed on the expunge path too */
+    str_free(&ctx->current_key);
+    str_free(&ctx->current_value);
+    array_foreach_modifiable(&ctx->fields, field) {
+        str_free(&field->value);
+        i_free(field->key);
+    }
+    array_free(&ctx->fields);
 
     /* perform the actual post */
     if (ctx->documents_added)
@@ -811,12 +812,9 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         "}\n", username, str_c(existing_guids));
     ret = elastic_connection_delete_by_query(backend->conn, pool, query);
 
-    /* cleanup */
+    /* cleanup: query, existing_guids, uids and expunged_uids are all
+       allocated from pool, so unreffing it releases them too */
     pool_unref(&pool);
-    str_free(&query);
-    str_free(&existing_guids);
-	array_free(&uids);
-	array_free(&expunged_uids);
 
     if (ret < 0) {
         f_debug("return -1");
@@ -945,10 +943,9 @@ fts_backend_elastic_lookup_multi(struct fts_backend *_backend,
     }
 
     pool_t pool = result->pool;
-    /* Leave a valid NULL-terminated box_results behind on every exit path.
-       fts_backend_lookup_multi() substitutes one itself when we return 0, but
-       fts_backend_elastic_lookup() calls us directly and has no such wrapper. */
-    result->box_results = p_new(pool, struct fts_result, 1);
+    /* box_results stays NULL on every failure path below. Both callers cope:
+       fts_backend_lookup_multi() substitutes an empty terminator, and
+       fts_backend_elastic_lookup() checks for NULL. */
     string_t *query = str_new(pool, 1024);
     string_t *match_query = str_new(pool, 1024);
     string_t *fields = str_new(pool, 512);
