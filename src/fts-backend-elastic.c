@@ -199,6 +199,11 @@ fts_backend_elastic_bulk_end(struct elastic_fts_backend_update_context *_ctx)
     f_debug("end");
 }
 
+/* Scroll page size for rescan. The scroll loop now terminates on an empty
+   page, so this is a free parameter -- it no longer has to agree with a
+   hard-coded threshold in elastic_connection_search_scroll(). */
+#define ELASTIC_RESCAN_PAGE_SIZE 10000
+
 static const char JSON_LAST_UID[] =
     "{"
         "\"sort\":{"
@@ -757,18 +762,25 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
                     "}"
                 "},"
                 "\"_source\":false,"
-                "\"size\":10000"
+                "\"size\":%u"
             "}\n",
-            username, box_guid);
+            username, box_guid, ELASTIC_RESCAN_PAGE_SIZE);
 
         // fetch all uids for this mailbox
         // we need scroll request because we don't know in advance
         // how many messages are actually in elastic
         // the point of rescan is to remove expunges and fix elastic
-        ret = elastic_connection_search_scroll(backend->conn, pool, query, &elastic_results);
+        /* Every scroll page is retained now, so hold the hits in a pool that
+           dies with the mailbox. The rescan pool is alloconly and never frees,
+           so reusing it here kept every hit of every mailbox alive until the
+           whole user was done -- unbounded on mailboxes with >10k messages. */
+        pool_t box_pool = pool_alloconly_create("elastic rescan box", 16*1024);
+        ret = elastic_connection_search_scroll(backend->conn, box_pool, query, &elastic_results);
         if (ret < 0) {
             i_error("fts_elastic: Failed to search uids in elastic for mailbox %s",
                     mailbox_get_vname(box));
+            pool_unref(&box_pool);
+            elastic_results = NULL;
             continue;
         }
         array_clear(&expunged_uids);
@@ -783,13 +795,19 @@ static int fts_backend_elastic_rescan(struct fts_backend *_backend)
         f_debug("expunging uids");
         fts_backend_elastic_expunge_uids(_backend, box, expunged_uids);
 
-        if (elastic_results == NULL || elastic_results[0] == NULL) continue;
+        if (elastic_results == NULL || elastic_results[0] == NULL) {
+            pool_unref(&box_pool);
+            elastic_results = NULL;
+            continue;
+        }
         /* find missing and set last uid before first missing uid */
         seq_range_array_remove_seq_range(&uids, &elastic_results[0]->uids);
         seq_range_array_iter_init(&iter, &uids);
         if (seq_range_array_iter_nth(&iter, 0, &uid)) {
             fts_index_set_last_uid(box, uid-1);
         }
+        pool_unref(&box_pool);
+        elastic_results = NULL;
     }
 	(void)mailbox_list_iter_deinit(&list_iter);
     if (box != NULL)

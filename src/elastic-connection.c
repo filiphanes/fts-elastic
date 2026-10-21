@@ -22,10 +22,30 @@
 
 struct elastic_search_context {
     pool_t pool;
-    int found;
+    int found;      /* hits parsed across every page of this search */
+    int page_found; /* hits in the most recently parsed page */
 	struct elastic_result ***results;
     const char *scroll_id;
+    /* Results accumulate here across all scroll pages of one search. They
+       must outlive a single response: a scrolled search over a mailbox with
+       more than one page used to keep only the last page. */
+    HASH_TABLE(char *, struct elastic_result *) results_hash;
+    ARRAY(struct elastic_result *) results_array;
 };
+
+static void elastic_search_context_init(struct elastic_search_context *ctx)
+{
+    hash_table_create(&ctx->results_hash, ctx->pool, 0, str_hash, strcmp);
+    p_array_init(&ctx->results_array, ctx->pool, 32);
+}
+
+/* NULL-terminate the accumulated results and publish them to the caller. */
+static void elastic_search_context_finish(struct elastic_search_context *ctx)
+{
+    hash_table_destroy(&ctx->results_hash);
+    array_append_zero(&ctx->results_array);
+    *ctx->results = array_front_modifiable(&ctx->results_array);
+}
 
 
 struct elastic_connection {
@@ -302,8 +322,7 @@ int elastic_connection_post(struct elastic_connection *conn,
 void elastic_connection_search_hits(struct elastic_search_context *ctx, struct json_object *hits)
 {
     f_debug("start");
-    struct elastic_result *result;
-    ARRAY(struct elastic_result *) results_array;
+    struct elastic_result *result = NULL;
     struct fts_score_map *scores;
     struct json_object *hit;
     struct json_object *jval;
@@ -313,7 +332,6 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
     char *box_guid = "";
     const char *_id;
     char **id_part;
-	HASH_TABLE(char *, struct elastic_result *) results_hash;
 
     if (ctx == NULL || hits == NULL) {
         i_error("fts_elastic: select_json: critical error while processing result JSON");
@@ -327,10 +345,10 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
         return;
     }
 
-	hash_table_create(&results_hash, ctx->pool, 0, str_hash, strcmp);
-	p_array_init(&results_array, ctx->pool, 32);
-
     hits_count = json_object_array_length(hits);
+    /* Raw page size drives scroll termination, so record it before parsing:
+       a page whose every hit is malformed is still a page. */
+    ctx->page_found = hits_count;
     for (i = 0; i < hits_count; i++) {
         hit = json_object_array_get_idx(hits, i);
         if (!json_object_object_get_ex(hit, "_id", &jval)) {
@@ -352,16 +370,18 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
         }
         if (strcmp(box_guid, *id_part) != 0) {
             box_guid = *id_part;
-            result = hash_table_lookup(results_hash, box_guid);
+            result = hash_table_lookup(ctx->results_hash, box_guid);
             if (result == NULL) {
                 result = p_new(ctx->pool, struct elastic_result, 1);
                 result->box_guid = box_guid;
                 p_array_init(&result->uids, ctx->pool, 32);
                 p_array_init(&result->scores, ctx->pool, 32);
-                hash_table_insert(results_hash, box_guid, result);
-                array_push_back(&results_array, &result);
+                hash_table_insert(ctx->results_hash, box_guid, result);
+                array_push_back(&ctx->results_array, &result);
             }
         }
+        if (result == NULL)
+            continue;
         ctx->found += 1;
         if (seq_range_array_add(&result->uids, uid)) {
             /* duplicate result */
@@ -379,9 +399,6 @@ void elastic_connection_search_hits(struct elastic_search_context *ctx, struct j
         user = p_strdup(ctx->pool, *id_part);
         */
     }
-    hash_table_destroy(&results_hash);
-    array_append_zero(&results_array);
-    *ctx->results = array_front_modifiable(&results_array);
     f_debug("end");
 }
 
@@ -508,6 +525,7 @@ int elastic_connection_search(struct elastic_connection *conn, pool_t pool, stri
     conn->ctx->results = results;
     conn->ctx->found = 0;
     conn->post_type = ELASTIC_POST_TYPE_SEARCH;
+    elastic_search_context_init(conn->ctx);
 
 	i_free_and_null(conn->http_failure);
     json_tokener_reset(conn->tok);
@@ -515,6 +533,7 @@ int elastic_connection_search(struct elastic_connection *conn, pool_t pool, stri
     path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
                        conn->username, NULL);
     elastic_connection_post(conn, path, query);
+    elastic_search_context_finish(conn->ctx);
 
     if (conn->request_status < 0) {
         f_debug("return -1");
@@ -550,30 +569,40 @@ int elastic_connection_search_scroll(struct elastic_connection *conn, pool_t poo
     conn->ctx->results = results;
     conn->ctx->found = 0;
     conn->post_type = ELASTIC_POST_TYPE_SEARCH;
+    elastic_search_context_init(conn->ctx);
 
 	i_free_and_null(conn->http_failure);
     json_tokener_reset(conn->tok);
 
     path = p_strconcat(pool, conn->http_base_path, "_search?routing=",
                         conn->username, "&scroll=", SCROLL_TIMEOUT, NULL);
+    conn->ctx->page_found = 0;
     elastic_connection_post(conn, path, query);
 
     if (conn->ctx->scroll_id == NULL) {
         i_error("fts_elastic: _scroll_id not found in scroll response");
+        elastic_search_context_finish(conn->ctx);
         f_debug("return 0");
         return 0;
     }
 
     /* TODO: strip index (last segment) from path to allow elastic behind proxy */
     path = "/_search/scroll";
-    while (conn->ctx->found >= 9998) {
-        conn->ctx->found = 0;
+    /* Scroll until a page comes back empty. Testing the page size against a
+       hard-coded 9998 assumed the caller asked for exactly "size":10000 and
+       silently kept only one page for every other size. page_found is reset
+       before each request so a failed or hitless response ends the loop
+       instead of spinning on the previous page's count. */
+    while (conn->ctx->page_found > 0 && conn->ctx->scroll_id != NULL) {
+        conn->ctx->page_found = 0;
         str_truncate(query, 0);
         str_printfa(query, "{\"scroll\":\"%s\", \"scroll_id\":\"%s\"}",
                             SCROLL_TIMEOUT,
                             conn->ctx->scroll_id);
         elastic_connection_post(conn, path, query);
     }
+    elastic_search_context_finish(conn->ctx);
+
     /* DELETE search scroll context */
     conn->post_type = ELASTIC_POST_TYPE_DELETE;
     str_truncate(query, 0);
