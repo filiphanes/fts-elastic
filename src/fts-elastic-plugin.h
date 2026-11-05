@@ -19,7 +19,9 @@ struct fts_elastic_settings {
     const char *url;	    /* base URL to an ElasticSearch instance */
     const char *rawlog_dir; /* directory where raw http request and response will be saved */
     unsigned int bulk_size; /* maximum size of values indexed in _bulk requests default=5MB */
+    unsigned int max_connections; /* parallel connections, also _bulk requests sent at once default=1 */
     bool refresh_on_update;	/* if we want add ?refresh=true to elastic query*/
+    bool refresh_wait_for;	/* if we want add ?refresh=wait_for to the last _bulk of an update */
     bool refresh_by_fts;	/* if we want to allow refresh http request called by fts plugin */
     bool debug;			    /* whether or not debug is set */
     bool use_sql;		    /* use elastic sql rest api, which returns smaller results */

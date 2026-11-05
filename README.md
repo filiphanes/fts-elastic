@@ -53,9 +53,11 @@ and (re)start dovecot:
 
 * url=\<elasticsearch url\> Required elastic URL with index name, must end with slash /
 * bulk_size=\<positive integer\> How large bulk requests we want to send to elastic in bytes (default=5000000)
-* refresh={fts,index,never} When you want to [refresh elastic index](https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-refresh.html) so new emails will be searchable
-  * fts: when dovecot fts plugin calls it (typically before search)
-  * index: after each bulk update using ?refrest=true query param (create not effective indexes when combined with fts_autoindex=yes)
+* max_connections=\<positive integer\> How many _bulk requests one indexing process sends to elastic at once, each on its own connection (default=1, wait for every _bulk before building the next)
+* refresh={fts,update,wait_for,never} When you want to [refresh elastic index](https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-refresh.html) so new emails will be searchable
+  * fts (default): when dovecot fts plugin calls it (before every search), refreshes every shard of the index
+  * update: after each bulk update using ?refresh=true query param (create not effective indexes when combined with fts_autoindex=yes)
+  * wait_for: the last bulk of each indexing run waits with ?refresh=wait_for until elastic's next scheduled refresh, so indexed emails are searchable when indexing finishes, without forcing a refresh. Indexing takes up to the index's `refresh_interval` longer; with `refresh_interval: -1` it waits until something else refreshes
   * never: leave it to elastic, indexed emails may not be searchable immediately
 * debug Enables HTTP debugging
 * use_sql enables using [Elastic SQL REST API](https://www.elastic.co/guide/en/elasticsearch/reference/6.8/sql-rest.html), which returns csv results which are more efficient than json results

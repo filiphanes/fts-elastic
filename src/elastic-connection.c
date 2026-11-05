@@ -71,8 +71,18 @@ struct elastic_connection {
     /* context for the current search */
     struct elastic_search_context *ctx;
 
+    /* _bulk requests submitted but not answered yet. They are sent together
+       on the next http_client_wait(), so up to max_bulks_in_flight of them
+       are processed by elastic in parallel. */
+    unsigned int bulks_in_flight;
+    unsigned int max_bulks_in_flight;
+
     /* if we should send ?refresh=true on update _bulk requests */
     unsigned int refresh_on_update:1;
+    /* if we should send ?refresh=wait_for on the last _bulk of an update */
+    unsigned int refresh_wait_for:1;
+    /* a _bulk request failed since the last elastic_connection_bulk_wait() */
+    unsigned int bulk_failed:1;
     unsigned int debug:1;
     unsigned int http_ssl:1;
 };
@@ -124,13 +134,15 @@ int elastic_connection_init(const struct fts_elastic_settings *set,
     conn->http_ssl = http_url->have_ssl;
     conn->debug = set->debug;
     conn->refresh_on_update = set->refresh_on_update;
+    conn->refresh_wait_for = set->refresh_wait_for;
+    conn->max_bulks_in_flight = set->max_connections;
     conn->tok = json_tokener_new();
 
     /* guard against init being called multiple times */
     if (elastic_http_client == NULL) {
         i_zero(&http_set);
         http_set.max_idle_time_msecs = 5 * 1000;
-        http_set.max_parallel_connections = 1;
+        http_set.max_parallel_connections = set->max_connections;
         http_set.max_pipelined_requests = 1;
         http_set.max_redirects = 1;
         http_set.max_attempts = 3;
@@ -150,6 +162,8 @@ void elastic_connection_deinit(struct elastic_connection *conn)
 {
     f_debug("start");
     if (conn != NULL) {
+        /* their callbacks point at conn */
+        (void)elastic_connection_bulk_wait(conn);
         i_free(conn->http_host);
         i_free(conn->http_base_path);
         i_free(conn->ctx);
@@ -159,18 +173,21 @@ void elastic_connection_deinit(struct elastic_connection *conn)
     f_debug("end");
 }
 
-/* Checks response status code from _bulk request */
+/* Checks response status code from _bulk request. Bulks are answered out of
+ * order with other requests, so this is their own callback and it touches
+ * neither post_type nor request_status of the request being waited for. */
 static void
 elastic_connection_bulk_response(const struct http_response *response,
                                    struct elastic_connection *conn)
 {
     f_debug("start");
-    if (response != NULL && conn != NULL ) {
-        /* 200 OK, 204 continue */
-        if (response->status / 100 != 2) {
-            i_error("fts_elastic: Indexing failed: %s", response->reason);
-            conn->request_status = -1;
-        }
+    i_assert(conn->bulks_in_flight > 0);
+    conn->bulks_in_flight--;
+    /* 200 OK, 204 continue */
+    if (response->status / 100 != 2) {
+        i_error("fts_elastic: Indexing failed: %u %s",
+                response->status, response->reason);
+        conn->bulk_failed = TRUE;
     }
     f_debug("end");
 }
@@ -262,8 +279,7 @@ elastic_connection_http_response(const struct http_response *response,
             elastic_connection_search_response(response, conn);
             break;
         case ELASTIC_POST_TYPE_BULK:
-            elastic_connection_bulk_response(response, conn);
-            break;
+            /* bulks have their own callback */
         case ELASTIC_POST_TYPE_REFRESH:
         case ELASTIC_POST_TYPE_DELETE:
         case ELASTIC_POST_TYPE_DELETE_BY_QUERY:
@@ -272,6 +288,19 @@ elastic_connection_http_response(const struct http_response *response,
         }
     }
     f_debug("end");
+}
+
+static void
+elastic_connection_request_init(struct elastic_connection *conn,
+                                struct http_client_request *http_req)
+{
+    http_client_request_set_port(http_req, conn->http_port);
+    http_client_request_set_ssl(http_req, conn->http_ssl);
+    /* XXX: should be application/x-ndjson for bulk updates, but why when this works? */
+    http_client_request_add_header(http_req, "Content-Type", "application/json");
+    if (conn->basic_auth_username != NULL && conn->basic_auth_pass != NULL) {
+        http_client_request_set_auth_simple(http_req, conn->basic_auth_username, conn->basic_auth_pass);
+    }
 }
 
 /* Performs HTTP POST/DELETE request with callback */
@@ -295,14 +324,7 @@ int elastic_connection_post(struct elastic_connection *conn,
 
     http_req = http_client_request(elastic_http_client, method, conn->http_host,
                                    path, elastic_connection_http_response, conn);
-    http_client_request_set_port(http_req, conn->http_port);
-    http_client_request_set_ssl(http_req, conn->http_ssl);
-    /* XXX: should be application/x-ndjson for bulk updates, but why when this works? */
-    http_client_request_add_header(http_req, "Content-Type", "application/json");
-    if (conn->basic_auth_username != NULL && conn->basic_auth_pass != NULL) {
-        http_client_request_set_auth_simple(http_req, conn->basic_auth_username, conn->basic_auth_pass);
-    }
-
+    elastic_connection_request_init(conn, http_req);
     post_payload = i_stream_create_from_buffer(data);
     http_client_request_set_payload(http_req, post_payload, TRUE);
     i_stream_unref(&post_payload);
@@ -450,28 +472,72 @@ void elastic_connection_json(struct elastic_connection *conn, json_object *jobj)
     f_debug("end");
 }
 
-/* Performs elastic _bulk request
- * checking only response status
+static void elastic_connection_bulk_payload_destroyed(string_t *cmd)
+{
+    str_free(&cmd);
+}
+
+/* Submits elastic _bulk request without waiting for it, unless
+ * max_connections of them are already in flight. The request takes over
+ * *cmd until it is answered and the caller gets a new empty string, so the
+ * payload is never copied: N in flight hold N buffers of bulk_size.
+ * last marks the final _bulk of an update, which carries refresh=wait_for.
+ * Call elastic_connection_bulk_wait() before relying on the result.
  */
-int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd)
+int elastic_connection_bulk(struct elastic_connection *conn, string_t **cmd,
+                            bool last)
 {
     f_debug("start");
+    struct http_client_request *http_req = NULL;
+    struct istream *post_payload = NULL;
     const char *path = NULL;
+    const char *refresh = "";
 
-    if (conn == NULL || cmd == NULL) {
+    if (conn == NULL || cmd == NULL || *cmd == NULL) {
         i_error("fts_elastic: connection_bulk: conn or cmd is NULL");
         f_debug("return -1");
         return -1;
     }
 
-    conn->post_type = ELASTIC_POST_TYPE_BULK;
+    if (conn->refresh_on_update)
+        refresh = "&refresh=true";
+    else if (conn->refresh_wait_for && last)
+        refresh = "&refresh=wait_for";
     path = t_strconcat(conn->http_base_path, "_bulk"
-                        "?routing=", conn->username,
-                        conn->refresh_on_update ? "&refresh=true" : "",
-                        NULL);
-    elastic_connection_post(conn, path, cmd);
-    f_debug("return %d", conn->request_status);
-    return conn->request_status;
+                        "?routing=", conn->username, refresh, NULL);
+    http_req = http_client_request(elastic_http_client, "POST", conn->http_host,
+                                   path, elastic_connection_bulk_response, conn);
+    elastic_connection_request_init(conn, http_req);
+    post_payload = i_stream_create_from_buffer(*cmd);
+    i_stream_add_destroy_callback(post_payload,
+                                  elastic_connection_bulk_payload_destroyed, *cmd);
+    *cmd = str_new(default_pool, 1024 * 64);
+    http_client_request_set_payload(http_req, post_payload, TRUE);
+    i_stream_unref(&post_payload);
+    http_client_request_submit(http_req);
+    conn->bulks_in_flight++;
+
+    if (conn->bulks_in_flight >= conn->max_bulks_in_flight)
+        return elastic_connection_bulk_wait(conn);
+    f_debug("return 0");
+    return 0;
+}
+
+/* Waits for all submitted _bulk requests.
+ * Returns -1 if any of them failed since the previous wait. */
+int elastic_connection_bulk_wait(struct elastic_connection *conn)
+{
+    f_debug("start");
+    int ret;
+
+    if (conn->bulks_in_flight > 0)
+        http_client_wait(elastic_http_client);
+    i_assert(conn->bulks_in_flight == 0);
+
+    ret = conn->bulk_failed ? -1 : 0;
+    conn->bulk_failed = FALSE;
+    f_debug("return %d", ret);
+    return ret;
 }
 
 

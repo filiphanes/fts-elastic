@@ -37,6 +37,7 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
     }
 
     set->bulk_size = 5*1024*1024; /* 5 MB */
+    set->max_connections = 1;
     set->refresh_by_fts = TRUE;
     set->refresh_on_update = FALSE;
     set->use_sql = TRUE;
@@ -56,12 +57,23 @@ fts_elastic_plugin_init_settings(struct mail_user *user,
 				i_error("fts_elastic: bulk_size='%s' must be a positive integer", *tmp+10);
                 return -1;
 			}
+		} else if (strncmp(*tmp, "max_connections=", 16) == 0) {
+			if (str_to_uint(*tmp+16, &set->max_connections) < 0 || set->max_connections == 0) {
+				i_error("fts_elastic: max_connections='%s' must be a positive integer", *tmp+16);
+                return -1;
+			}
 		} else if (strncmp(*tmp, "refresh=", 8) == 0) {
+			/* the modes are exclusive: refresh=update used to keep the
+			   default refresh by fts too */
+			set->refresh_on_update = FALSE;
+			set->refresh_wait_for = FALSE;
+			set->refresh_by_fts = FALSE;
 			if (strcmp(*tmp + 8, "never") == 0) {
-				set->refresh_on_update = FALSE;
-				set->refresh_by_fts = FALSE;
+				/* leave it to elastic's refresh_interval */
 			} else if (strcmp(*tmp + 8, "update") == 0) {
 				set->refresh_on_update = TRUE;
+			} else if (strcmp(*tmp + 8, "wait_for") == 0) {
+				set->refresh_wait_for = TRUE;
 			} else if (strcmp(*tmp + 8, "fts") == 0) {
 				set->refresh_by_fts = TRUE;
 			} else {

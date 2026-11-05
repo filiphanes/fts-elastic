@@ -351,9 +351,13 @@ fts_backend_elastic_update_deinit(struct fts_backend_update_context *_ctx)
     }
     array_free(&ctx->fields);
 
+    /* Wait for the early posts from uid_changed first: a refresh=wait_for
+       on the last post only covers what elastic finished before it. */
+    (void)elastic_connection_bulk_wait(backend->conn);
     /* perform the actual post */
     if (ctx->documents_added)
-        elastic_connection_bulk(backend->conn, ctx->json_request);
+        elastic_connection_bulk(backend->conn, &ctx->json_request, TRUE);
+    (void)elastic_connection_bulk_wait(backend->conn);
 
     /* global clean-up */
     str_free(&ctx->json_request); 
@@ -482,11 +486,8 @@ fts_backend_elastic_uid_changed(struct fts_backend_update_context *_ctx,
 
     /* chunk up our requests in to reasonable sizes */
     if (str_len(ctx->json_request) > fuser->set.bulk_size) {  
-        /* do an early post */
-        elastic_connection_bulk(backend->conn, ctx->json_request);
-
-        /* reset our tracking variables */
-        buffer_set_used_size(ctx->json_request, 0);
+        /* do an early post, it hands us a new empty json_request */
+        elastic_connection_bulk(backend->conn, &ctx->json_request, FALSE);
     }
     
     ctx->uid = uid;

@@ -45,7 +45,10 @@ void elastic_connection_json(struct elastic_connection *conn, json_object *jobj)
 void elastic_connection_search_hits(struct elastic_search_context *ctx,
                                     struct json_object *hits);
 
-int elastic_connection_bulk(struct elastic_connection *conn, string_t *cmd);
+int elastic_connection_bulk(struct elastic_connection *conn, string_t **cmd,
+                            bool last);
+
+int elastic_connection_bulk_wait(struct elastic_connection *conn);
 
 int elastic_connection_refresh(struct elastic_connection *conn);
 
